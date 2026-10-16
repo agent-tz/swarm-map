@@ -169,3 +169,19 @@ All platforms share these conventions:
 - **Approval via HSM UI:** The **Surfaces** tab lets you manage approved users and groups without editing `.env` files.
 - **Approval via `.env`:** Power users can edit allowlists directly and restart the agent.
 - **Duplicating an agent gives it a fresh identity.** Duplicate copies the source's config/tools but resets `HERMES_AGENT_NAME` (the agent's HSM-policy identity) and `SOUL.md` to the new name, and strips surface credentials — so a duplicate never inherits the source's policy/persona or shares its surfaces. Customize the new SOUL.md and connect surfaces afterward.
+
+---
+
+## Protected outputs destinations
+
+With [Protected outputs](runbooks/ovenmitt.md) on, an agent can send vault objects (outputs that must never reach a model provider) to the chat it is talking to, but only on platforms you tick on the card. Every platform is a third party to the data. Before ticking one for licensed outputs, check its terms on AI/ML use of message content, who holds rights to data in a server or group, retention, and whether the operator can read content.
+
+For Papa Reo output (Kaitiakitanga License, clause 3):
+
+| Platform | Status |
+|---|---|
+| Signal | Likely compatible: end-to-end encrypted, so Signal's servers can't read attachments. signal-cli streams sent attachments without keeping a copy (re-check against the version you run). |
+| Discord | **Not a destination** until Te Hiku Media clears it: Discord can read message content and attachments. Fine for testing with non-protected bytes. |
+| Telegram, Slack, Mattermost | Unassessed. Self-hosted Mattermost turns the question into who runs the server. |
+
+The open task is a short data pack per candidate platform (the four questions above), for Te Hiku Media to review.

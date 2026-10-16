@@ -105,7 +105,9 @@ On first launch, the setup wizard detects your Hermes compose directories automa
 - **Restart / rebuild / purge** — container lifecycle via UI or API
 - **Policy enforcement** — group access control, DM approval gating, admin resolution
 - **Agent creation wizard** — scaffold and deploy new agents from the UI
-- **API key management** — AES-256-GCM encrypted at rest
+- **API key management** — AES-256-GCM encrypted at rest; sealed keys (e.g. Papa Reo) go into the compose environment, never the agent's `.env`
+- **Protected outputs** — a per-agent [ovenmitt](https://github.com/utunga/oven-mitt) vault for outputs that must never enter a model's context, delivered to chats on operator-approved platforms only, with a 6-hourly audit check ([runbook](docs/runbooks/ovenmitt.md)) <!-- FIXME: move this utunga/ URL to cyborg-garden/oven-mitt as soon as that is fixed -->
+- **Transcription (Papa Reo escalation)** — recordings get a transcript back; ones that may contain te reo Māori go to Papa Reo and through Protected outputs
 - **Audit log** — track who changed what and when
 
 <img width="911" height="742" alt="Screenshot 2026-05-27 at 3 27 31 pm" src="https://github.com/user-attachments/assets/68a7f594-4e17-419a-8cb6-180b94cac40a" />
@@ -184,6 +186,8 @@ Any AI agent (Claude Code, Hermes, etc.) can orchestrate your fleet via the REST
 | `POST` | `/api/cascades/:name/apply` | Port a cascade onto a harness (`{ harnessId, restart? }`); refuses (400, no write, no restart) if the harness lacks a provider's key |
 | `POST` | `/api/harnesses/:id/artifacts/sync` | Adopt/update the base package on an existing agent, add-only (`{ dryRun?, force?, surface?, packs?, assignKeys?, includeVision? }`) |
 | `GET` | `/api/harnesses/:id/base-package/drift` | Report-only drift against the base package (fixes nothing) |
+| `GET`/`PUT` | `/api/harnesses/:id/protected-outputs` | ovenmitt vault status (`?audit=refresh` runs the audit check now) / change (`{ enabled?, destinations?, ttl? }`) |
+| `GET`/`PUT` | `/api/harnesses/:id/transcription` | Papa Reo escalation status / change (`{ enabled }`); needs Protected outputs |
 | `POST` | `/api/setup/deploy` | Deploy new agent (full wizard payload) |
 | `POST` | `/api/setup/detect` | Scan for Hermes compose directories |
 | `GET` | `/api/keys` | List keys (masked, from agent .env files) |

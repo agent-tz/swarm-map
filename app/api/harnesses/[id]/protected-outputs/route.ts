@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
-import { protectedOutputsStatus, setProtectedOutputs } from '@/lib/services/protected-outputs'
+import { services } from '@/lib/services'
+import { protectedOutputsStatus, refreshAudit, setProtectedOutputs } from '@/lib/services/protected-outputs'
 
 /**
  * GET /api/harnesses/:id/protected-outputs
@@ -7,13 +8,19 @@ import { protectedOutputsStatus, setProtectedOutputs } from '@/lib/services/prot
  * Status only: enabled, destinations (platforms whose chats may receive
  * protected files), TTL, the agent's live surfaces, whether a consumer
  * credential is issued (never the credential), daemon health, whether the
- * bridge plugin is installed, and the last audit check.
+ * bridge plugin is installed, and the last audit check (the 6-hourly timer's,
+ * or a fresh one with ?audit=refresh).
  */
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params
+  // ?audit=refresh runs the audit check now instead of waiting for the timer.
+  if (new URL(request.url).searchParams.get('audit') === 'refresh') {
+    const h = services.harness.get(id)
+    if (h?.ovenmitt?.enabled) await refreshAudit(h)
+  }
   const status = await protectedOutputsStatus(id)
   if (!status) return NextResponse.json({ error: 'Harness not found' }, { status: 404 })
   return NextResponse.json(status)

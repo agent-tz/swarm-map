@@ -61,6 +61,10 @@ Never hardcode agent ports. The deploy service queries Docker directly (`docker 
 
 New agents try `nousresearch/hermes-agent:latest` from Docker Hub first. If pull fails (auth, network), falls back to a locally-built `hermes*` image, preferring the base build over agent-specific ones (name heuristic in `app/api/setup/deploy/route.ts`).
 
+### Sealed Keys and Protected Outputs
+
+A **sealed** provider's key (`SEALED_PROVIDERS` in `lib/key-providers.ts`, today `papareo`) never goes into an agent's `.env`, where the agent's terminal could `cat` it: `KeysService.writeKeyToEnv` renders it into the hermes service's compose `environment:` instead. **Protected outputs** adds a per-agent `ovenmitt-<name>` vault sidecar for outputs that must never enter an LLM context. Both edit the compose surgically, so both work on deploy-born composes, and the settings route re-applies them after any regeneration. "ovenmitt vault" (protected outputs) is not the key store (API keys). See `docs/runbooks/ovenmitt.md`.
+
 ### Key Encryption
 
 AES-256-GCM at rest. Machine-local key at `~/.hermes-swarm-map/.key` (0600 permissions, auto-generated on first use). Never expose raw key values in API responses or logs.
@@ -148,6 +152,11 @@ All business logic in `lib/services/`. API routes are thin wrappers.
 | `ConfigService` | `config.ts` | App settings, model/people/surfaces config |
 | `Encryption` | `encryption.ts` | AES-256-GCM encrypt/decrypt, key file management |
 | `Storage` | `storage.ts` | JSON/JSONL file I/O for `~/.hermes-swarm-map/` |
+| Protected outputs | `protected-outputs.ts` | Per-agent ovenmitt vault: enable/disable, consumer credential (encrypted in its own file, never on the overlay), pack install, re-applying sidecar + sealed env after a regeneration |
+| ovenmitt | `ovenmitt.ts` | Daemon config rendering (`ovenmitt.toml`), sidecar start/health, credential issue/revoke, audit check (`docker exec ovenmitt-<name> …`) |
+| Compose surgery | `ovenmitt-compose.ts` | Idempotent line edits on any Swarm-Map-written compose (standalone and deploy-born): sidecar, managed `environment:` entries, memory limit |
+| Sealed keys | `sealed-env.ts` | Writes sealed values (e.g. `PAPAREO_API_KEY`) into the compose `environment:`, 0600, never `.env` |
+| Transcription | `transcription.ts` | Papa Reo escalation card: `stt.*` splice in config.yaml, memory floor, restore on disable |
 
 ## Agentic Use (Claude Code, Hermes, etc.)
 
