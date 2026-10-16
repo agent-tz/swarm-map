@@ -31,6 +31,21 @@
       "enabled": true,
       "tier": "pack",
       "pack": "browser-ops"
+    },
+    {
+      "name": "ovenmitt_bridge",
+      "source": "git:utunga/oven-mitt#v0.2.0:hermes-plugin/plugin",
+      "enabled": true,
+      "tier": "pack",
+      "pack": "protected-outputs",
+      "note": "FIXME: move this utunga/ source to cyborg-garden/oven-mitt as soon as that is fixed"
+    },
+    {
+      "name": "papareo_transcribe",
+      "source": "git:cyborg-garden/papareo-transcribe#v0.1.0:hermes-plugin",
+      "enabled": true,
+      "tier": "pack",
+      "pack": "papareo-transcription"
     }
   ],
   "imagePlugins": [
@@ -53,6 +68,19 @@
       "source": "local",
       "tier": "pack",
       "pack": "browser-ops"
+    },
+    {
+      "name": "ovenmitt",
+      "source": "git:utunga/oven-mitt#v0.2.0:hermes-plugin/skill",
+      "tier": "pack",
+      "pack": "protected-outputs",
+      "note": "FIXME: move this utunga/ source to cyborg-garden/oven-mitt as soon as that is fixed"
+    },
+    {
+      "name": "papareo-transcribe",
+      "source": "git:cyborg-garden/papareo-transcribe#v0.1.0:hermes-skill",
+      "tier": "pack",
+      "pack": "papareo-transcription"
     }
   ],
   "hooks": [
@@ -70,6 +98,14 @@
     "community-member": {
       "description": "Public-safe community seed (orientation + community MEMORY). Ships via the use-case template path.",
       "public": true
+    },
+    "protected-outputs": {
+      "description": "ovenmitt vault bridge: native ovenmitt_vault_* tools and the ovenmitt skill, for outputs that must never enter an LLM context. Installed by the Protected outputs card, which also adds the per-agent daemon and credential.",
+      "public": false
+    },
+    "papareo-transcription": {
+      "description": "transcribe_recording with Papa Reo escalation for recordings that may contain te reo Maori. Needs protected-outputs. Installed by the Transcription card.",
+      "public": false
     }
   },
   "research": {

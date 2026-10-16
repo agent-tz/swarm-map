@@ -15,6 +15,8 @@ vi.mock('@/lib/services', () => ({
     harness: { restart: vi.fn(), get: vi.fn(() => undefined), updateConfig: vi.fn() },
     config: { getSettings: vi.fn(() => ({})) },
     surfaceAdmins: { syncFromAllowlist: vi.fn() },
+    // The regeneration path re-applies sealed keys; none are assigned here.
+    keys: { list: vi.fn(() => []), getDecryptedValue: vi.fn() },
   },
 }))
 vi.mock('@/lib/resolvers', () => ({

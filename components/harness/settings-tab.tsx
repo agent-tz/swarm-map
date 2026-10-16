@@ -6,6 +6,7 @@ import { Shield, Loader2, Save, RotateCw } from 'lucide-react'
 import { toast } from 'sonner'
 import type { Surface } from '@/lib/types'
 import { TuningCard } from './tuning-card'
+import { ProtectedOutputsCard, TranscriptionCard } from './protected-outputs-card'
 
 type SurfaceSettings = {
   allowedUsers: string[]
@@ -456,6 +457,11 @@ if (loading) {
 
       {/* Memory length, turn budget, compression (config.yaml) */}
       <TuningCard harnessId={harnessId} />
+
+      {/* ovenmitt vault for outputs that must never reach the model, and the
+          transcription capability layered on it */}
+      <ProtectedOutputsCard harnessId={harnessId} />
+      <TranscriptionCard harnessId={harnessId} />
 
       {/* VPN (WireGuard Sidecar) */}
       <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 space-y-3">

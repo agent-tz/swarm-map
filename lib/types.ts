@@ -81,12 +81,37 @@ export type Harness = {
   // Rendered as the HERMES_EXTRA_APT_PACKAGES build arg on every
   // regeneration, so a rebuild cannot silently drop them.
   extraAptPackages?: string[]
+  // Protected outputs: a per-agent ovenmitt vault daemon (the ovenmitt-<name>
+  // sidecar) and its generated config. Status only: the consumer credential
+  // itself is kept encrypted in its own file, never on the overlay, so no
+  // harness API can return it. See lib/services/protected-outputs.ts.
+  ovenmitt?: OvenmittSettings
+  // Transcription (Papa Reo escalation), layered on Protected outputs: voice
+  // input off, local whisper model, memory floor. `prior` keeps what enabling
+  // replaced, so disabling restores it.
+  transcription?: TranscriptionSettings
   // "Track the newest version of this model" — keyed by "provider/model"
   // exactly as the entry appears in the agent's fallback_providers (e.g.
   // "openrouter/z-ai/glm-5.2"). true = the model-update scheduler may rotate
   // this entry to its version successor (in 'apply' mode) and the key is
   // rotated with it. Absent/false = report only. Never set for ollama.
   modelTracking?: Record<string, boolean>
+}
+
+export type OvenmittSettings = {
+  enabled: boolean
+  // Platforms (surface slugs) whose chats may receive protected files. Each
+  // becomes a `send` destination named after the platform. Default none.
+  destinations: string[]
+  // Vault TTL, e.g. '30d'.
+  ttl?: string
+  // Id of the issued consumer credential (not a secret; revocation handle).
+  credentialId?: string
+}
+
+export type TranscriptionSettings = {
+  enabled: boolean
+  prior?: { sttEnabled: string | null; sttModel: string | null; memory: string | null }
 }
 
 /** Global policy for the model-update scheduler (Settings.modelAutoUpdate). */

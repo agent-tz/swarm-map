@@ -7,6 +7,8 @@ import type { Storage } from './storage'
 import type { AuditService } from './audit'
 import { Encryption } from './encryption'
 import { assertNoNewline } from '@/lib/env-helpers'
+import { isSealedProvider } from '@/lib/key-providers'
+import { writeSealedEnv } from './sealed-env'
 
 const KEYS_FILE = 'keys.json'
 
@@ -88,6 +90,19 @@ function removeEnvVar(content: string, varName: string): string {
   return content.replace(new RegExp(`^${varName}=.*\\n?`, 'm'), '')
 }
 
+// Remove a VAR= line from a .env file on disk; true when the file changed.
+function stripEnvFileVar(envPath: string, varName: string): boolean {
+  try {
+    const content = fs.readFileSync(envPath, 'utf-8')
+    const next = removeEnvVar(content, varName)
+    if (next === content) return false
+    fs.writeFileSync(envPath, next, { mode: 0o600 })
+    return true
+  } catch {
+    return false
+  }
+}
+
 // Hints that let a key resolve to the right .env var name. Custom-provider keys
 // carry no entry in PROVIDER_TO_VAR, so they lean on these.
 type EnvVarHints = { name?: string; envVar?: string; identifier?: string }
@@ -148,6 +163,9 @@ const PROVIDER_PATTERNS: ProviderPattern[] = [
   { varPattern: /^CAPSOLVER_API_KEY$/i, provider: 'capsolver' },
   { varPattern: /^OPEN_MEASURES_API_KEY$/i, provider: 'open-measures' },
   { varPattern: /^PEXELS_API_KEY$/i, provider: 'pexels' },
+  // Sealed (lib/key-providers.ts): normally never in a .env. Still a pattern so
+  // a hand-written copy is discovered, flagged, and stripped on assignment.
+  { varPattern: /^PAPAREO_API_KEY$/i, provider: 'papareo' },
   // Z.ai (GLM). The runtime plugin accepts GLM_API_KEY / ZAI_API_KEY / Z_AI_API_KEY;
   // GLM_API_KEY is the canonical one HSM writes (see PROVIDER_TO_VAR + deploy template).
   { varPattern: /^(GLM_API_KEY|ZAI_API_KEY|Z_AI_API_KEY)$/i, provider: 'zai' },
@@ -262,6 +280,9 @@ function discoverKeys(harnessNames: string[], encryption?: Encryption): Map<stri
 
 export class KeysService {
   private encryption: Encryption
+  // Swarm Map's own data dir: sealed keys are written into the compose files
+  // it keeps under <dataDir>/compose/<name>/.
+  private dataDir: string
 
   constructor(
     private storage: Storage,
@@ -271,6 +292,7 @@ export class KeysService {
     // Use the storage directory as the data dir for the encryption key file
     const dir = dataDir ?? storage.getBaseDir()
     this.encryption = new Encryption(dir)
+    this.dataDir = dir
   }
 
   private defaultHarnessNames(): string[] {
@@ -392,6 +414,7 @@ export class KeysService {
     capsolver: 'CAPSOLVER_API_KEY',
     'open-measures': 'OPEN_MEASURES_API_KEY',
     pexels: 'PEXELS_API_KEY',
+    papareo: 'PAPAREO_API_KEY',
     zai: 'GLM_API_KEY',
     openrouter: 'OPENROUTER_API_KEY',
   }
@@ -450,10 +473,23 @@ export class KeysService {
   }
 
   // Returns whether the .env changed. An already-correct .env is not rewritten.
+  //
+  // Sealed providers (lib/key-providers.ts) take the other branch: the value
+  // goes into the agent's compose `environment:` and any .env copy is removed.
+  // Every assign/unassign/rotate/resync path funnels through here and
+  // removeKeyFromEnv, so this is the one place that decision is made. Throws
+  // when the agent has no compose Swarm Map wrote (there is nowhere safe to
+  // put the key).
   writeKeyToEnv(harnessIdOrName: string, provider: string, value: string, hints?: EnvVarHints): boolean {
     const name = harnessIdOrName.startsWith('h_') ? idToName(harnessIdOrName) : harnessIdOrName
     const dataDir = agentDataDir(name)
     const envPath = path.join(dataDir, '.env')
+
+    if (isSealedProvider(provider)) {
+      const varName = this.resolveEnvVar(provider, value, hints)
+      const composeChanged = writeSealedEnv(this.dataDir, name, { [varName]: value })
+      return stripEnvFileVar(envPath, varName) || composeChanged
+    }
 
     let content = ''
     let exists = true
@@ -494,6 +530,13 @@ export class KeysService {
     const name = harnessIdOrName.startsWith('h_') ? idToName(harnessIdOrName) : harnessIdOrName
     const dataDir = agentDataDir(name)
     const envPath = path.join(dataDir, '.env')
+
+    if (isSealedProvider(provider)) {
+      const varName = this.resolveEnvVar(provider, '', hints)
+      try { writeSealedEnv(this.dataDir, name, { [varName]: null }) } catch { /* no compose: nothing sealed */ }
+      stripEnvFileVar(envPath, varName)
+      return
+    }
 
     try {
       let content = fs.readFileSync(envPath, 'utf-8')

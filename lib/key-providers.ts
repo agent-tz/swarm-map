@@ -30,9 +30,9 @@ export const KEY_PROVIDERS = [
   'aws', 'aws-bedrock',
   // Platforms / surfaces
   'github', 'notion', 'telegram', 'signal', 'mattermost', 'bluesky',
-  // Service APIs
+  // Service APIs. `papareo` is sealed: see SEALED_PROVIDERS.
   'brave', 'helius', 'coingecko', 'dehashed', 'opencorporates',
-  'capsolver', 'open-measures', 'pexels',
+  'capsolver', 'open-measures', 'pexels', 'papareo',
   // Escape hatch — requires the env-var field, see above.
   'custom',
 ]
@@ -44,4 +44,24 @@ export function providerOptions(current: string): string[] {
   return current && !KEY_PROVIDERS.includes(current)
     ? [...KEY_PROVIDERS, current]
     : KEY_PROVIDERS
+}
+
+// Sealed providers: their key never goes into the agent's .env, where the
+// agent's own terminal tool could `cat` it. Assigning one renders it into the
+// hermes service's compose `environment:` block instead (which outranks the
+// .env), and the plugin that uses it pops it out of the process environment
+// into memory at load. The residual (plaintext in the host compose file, 0600)
+// is the same posture as .env. Fixed per provider in code: a second sealed
+// provider is a one-line change when a need appears.
+//
+// papareo: Papa Reo outputs are licensed so that they must never reach an LLM
+// provider, so the key that produces them must not be one `curl` away from the
+// agent. See docs/runbooks/ovenmitt.md.
+export const SEALED_PROVIDER_VARS: Readonly<Record<string, string>> = {
+  papareo: 'PAPAREO_API_KEY',
+}
+export const SEALED_PROVIDERS: ReadonlySet<string> = new Set(Object.keys(SEALED_PROVIDER_VARS))
+
+export function isSealedProvider(provider: string): boolean {
+  return SEALED_PROVIDERS.has(provider)
 }

@@ -1197,6 +1197,11 @@ export class HarnessService {
         ...(overlay.modelTracking && Object.keys(overlay.modelTracking).length
           ? { modelTracking: overlay.modelTracking }
           : {}),
+        //  - ovenmitt/transcription: compose regeneration re-applies the
+        //    sidecar and sealed env from get(id). Missing here, a settings
+        //    save on a RUNNING agent would drop Protected outputs.
+        ...(overlay.ovenmitt ? { ovenmitt: overlay.ovenmitt } : {}),
+        ...(overlay.transcription ? { transcription: overlay.transcription } : {}),
       }
 
       // Override status based on restart tracker
@@ -1295,6 +1300,8 @@ export class HarnessService {
       // Per-entry "track newest version" flags; omitted when absent so a
       // legacy overlay stays byte-identical.
       ...(o.modelTracking && Object.keys(o.modelTracking).length ? { modelTracking: o.modelTracking } : {}),
+      ...(o.ovenmitt ? { ovenmitt: o.ovenmitt } : {}),
+      ...(o.transcription ? { transcription: o.transcription } : {}),
     }
   }
 

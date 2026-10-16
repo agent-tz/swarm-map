@@ -144,6 +144,9 @@ describe('Settings PUT on a DISCOVERED (running) agent keeps its extra mounts (#
     holder.svc.harness = harness
     holder.svc.config = config
     holder.svc.surfaceAdmins = new SurfaceAdminService(storage, audit)
+    // The regeneration path re-applies sealed keys; none are assigned here.
+    holder.svc.keys = { list: () => [], getDecryptedValue: () => undefined }
+    holder.svc.storage = storage
   })
 
   afterEach(() => {

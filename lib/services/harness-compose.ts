@@ -11,6 +11,7 @@ import os from 'os'
 import { assertNoNewline } from '@/lib/env-helpers'
 import { ALL_SURFACE_VARS } from '@/lib/surfaces/derive'
 import type { ExtraMount } from '@/lib/types'
+import { MANAGED_ENV_NAMES } from './ovenmitt-compose'
 
 /**
  * Expand a leading `~` in a HOST path to this user's home directory.
@@ -69,6 +70,10 @@ export const RESERVED_EXTRA_ENV_NAMES: ReadonlySet<string> = new Set<string>([
   // Every surface credential, admission allowlist and behavior gate the surface
   // registry knows about — all delivered via env_file, all outrankable here.
   ...ALL_SURFACE_VARS,
+  // Sealed keys and the ovenmitt wiring, which Swarm Map itself renders into
+  // `environment:` (lib/services/sealed-env.ts). An extraEnv twin would both
+  // put a secret in harnesses.json and fight the managed value.
+  ...MANAGED_ENV_NAMES,
 ])
 
 type ResolvedMount = {

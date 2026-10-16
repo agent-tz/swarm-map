@@ -37,6 +37,9 @@ export async function register() {
   startIntegrityScheduler()
   const { startDbSnapshotScheduler } = await import('@/lib/services/db-snapshot-scheduler')
   startDbSnapshotScheduler()
+  // Protected outputs: audit verify + review in each agent's ovenmitt sidecar.
+  const { startOvenmittAuditScheduler } = await import('@/lib/services/ovenmitt-audit-scheduler')
+  startOvenmittAuditScheduler()
   // Model freshness / "track newest version" check (off until
   // settings.modelAutoUpdate.enabled; report-only unless mode is 'apply').
   const { startModelUpdateScheduler } = await import('@/lib/services/model-update-scheduler')

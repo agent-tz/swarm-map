@@ -20,6 +20,8 @@ import {
 } from '@/lib/services/discord-thread-gate'
 import { adapterForRuntime } from '@/lib/services/harness'
 import { isDeployBornCompose, validateExtraMounts, validateExtraEnv, validateExtraAptPackages } from '@/lib/services/harness-compose'
+import { holdsSealedValues, reapplyManagedWiring } from '@/lib/services/protected-outputs'
+import { writeComposeSecret } from '@/lib/services/sealed-env'
 
 function agentDataDir(harnessId: string): string {
   const name = harnessId.replace(/^h_/, '').replace(/_/g, '-')
@@ -901,7 +903,12 @@ export async function PUT(
         extraEnv: harness.extraEnv,
         extraAptPackages: harness.extraAptPackages,
       })
-      fs.writeFileSync(harness.composeFile, compose, 'utf-8')
+      // The template knows nothing of the ovenmitt sidecar or sealed values
+      // (Papa Reo's key, the vault credential). Put them back, and keep a
+      // compose that holds secrets 0600 like the .env.
+      const wired = reapplyManagedWiring(compose, harness)
+      if (holdsSealedValues(harness)) writeComposeSecret(harness.composeFile, wired)
+      else fs.writeFileSync(harness.composeFile, wired, 'utf-8')
     }
   }
 
