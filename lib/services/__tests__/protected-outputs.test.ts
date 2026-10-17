@@ -8,7 +8,9 @@ import { AuditService } from '../audit'
 import { generateAgentCompose } from '../agent-deploy-templates'
 import { renderOvenmittToml, validateOvenmitt } from '../ovenmitt'
 import { spliceStt } from '../transcription'
-import { isSealedProvider, KEY_PROVIDERS } from '@/lib/key-providers'
+import { isSealedProvider, isSealedVar, KEY_PROVIDERS, SEALED_PROVIDER_CONSUMERS, SEALED_PROVIDER_VARS } from '@/lib/key-providers'
+import { SEALED_SECRET_NAMES } from '../ovenmitt-compose'
+import { pluginReady } from '../sealed-env'
 import { RESERVED_EXTRA_ENV_NAMES, validateExtraEnv } from '../harness-compose'
 
 describe('ovenmitt config', () => {
@@ -87,6 +89,16 @@ describe('sealed keys', () => {
   const KEY = 'papareo-test-key-0123456789'
   const composeFile = () => path.join(tmpStore, 'compose', 'scout', 'docker-compose.yml')
   const envFile = () => path.join(tmpHome, '.hermes-scout', '.env')
+  const agentDir = () => path.join(tmpHome, '.hermes-scout')
+  // The consumer plugin, installed and enabled the way a pack leaves it.
+  const installConsumer = (enabled = true) => {
+    fs.mkdirSync(path.join(agentDir(), 'plugins', 'papareo_transcribe'), { recursive: true })
+    fs.writeFileSync(path.join(agentDir(), 'plugins', 'papareo_transcribe', 'plugin.yaml'), 'name: papareo_transcribe\n')
+    fs.writeFileSync(
+      path.join(agentDir(), 'config.yaml'),
+      enabled ? 'model: x\nplugins:\n  enabled:\n    - papareo_transcribe\n' : 'model: x\n',
+    )
+  }
 
   beforeEach(() => {
     tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'swarm-map-sealed-home-'))
@@ -114,6 +126,7 @@ describe('sealed keys', () => {
   })
 
   it('assigning writes the compose environment, never the .env, and strips any .env copy', () => {
+    installConsumer()
     expect(keys.writeKeyToEnv('h_scout', 'papareo', KEY)).toBe(true)
     const compose = fs.readFileSync(composeFile(), 'utf-8')
     expect(compose).toContain(`      - "PAPAREO_API_KEY=${KEY}"`)
@@ -125,6 +138,7 @@ describe('sealed keys', () => {
   })
 
   it('unassigning clears it from the compose', () => {
+    installConsumer()
     keys.writeKeyToEnv('h_scout', 'papareo', KEY)
     keys.removeKeyFromEnv('h_scout', 'papareo')
     expect(fs.readFileSync(composeFile(), 'utf-8')).not.toContain('PAPAREO_API_KEY')
@@ -133,6 +147,68 @@ describe('sealed keys', () => {
   it('refuses an agent without a Swarm-Map-written compose', () => {
     fs.rmSync(composeFile())
     expect(() => keys.writeKeyToEnv('h_scout', 'papareo', KEY)).toThrow(/compose file Swarm Map wrote/)
+  })
+
+  it('holds the key back until the plugin that pops it is installed and enabled', () => {
+    for (const state of ['absent', 'disabled'] as const) {
+      if (state === 'disabled') installConsumer(false)
+      keys.writeKeyToEnv('h_scout', 'papareo', KEY)
+      expect(fs.readFileSync(composeFile(), 'utf-8')).not.toContain(KEY)
+      // The plaintext .env copy goes either way.
+      expect(fs.readFileSync(envFile(), 'utf-8')).toBe('SIGNAL_ACCOUNT=+100\n')
+    }
+    installConsumer()
+    expect(pluginReady(agentDir(), 'papareo_transcribe')).toBe(true)
+    keys.writeKeyToEnv('h_scout', 'papareo', KEY)
+    expect(fs.readFileSync(composeFile(), 'utf-8')).toContain(KEY)
+  })
+
+  it('a rendered secret brings the seal script; clearing it takes the script away', () => {
+    installConsumer()
+    keys.writeKeyToEnv('h_scout', 'papareo', KEY)
+    const sealed = fs.readFileSync(composeFile(), 'utf-8')
+    expect(sealed).toContain('      - source: seal-secrets-scout')
+    expect(sealed).toContain('        target: /etc/cont-init.d/50-seal-secrets')
+    expect(sealed).toMatch(/^configs:\n {2}seal-secrets-scout:\n {4}content: \|/m)
+    keys.removeKeyFromEnv('h_scout', 'papareo')
+    const cleared = fs.readFileSync(composeFile(), 'utf-8')
+    expect(cleared).not.toContain('seal-secrets')
+    expect(cleared).not.toMatch(/^configs:/m)
+  })
+
+  const registerScout = () => fs.writeFileSync(path.join(tmpStore, 'harnesses.json'), JSON.stringify([{ name: 'scout' }]))
+
+  it('assigning moves a key discovered in the same agent\'s .env into the compose', () => {
+    installConsumer()
+    registerScout()
+    const discovered = keys.list().find((k) => k.provider === 'papareo')!
+    expect(discovered.assignedTo).toContain('h_scout')
+    keys.setAssignment(discovered.id, ['h_scout'])
+    expect(fs.readFileSync(envFile(), 'utf-8')).toBe('SIGNAL_ACCOUNT=+100\n')
+    expect(fs.readFileSync(composeFile(), 'utf-8')).toContain(`      - "PAPAREO_API_KEY=${KEY}"`)
+  })
+
+  it('refuses an assignment without a Swarm-Map compose before saving anything', () => {
+    registerScout()
+    const discovered = keys.list().find((k) => k.provider === 'papareo')!
+    fs.rmSync(composeFile())
+    expect(() => keys.setAssignment(discovered.id, ['h_scout'])).toThrow(/compose file Swarm Map wrote/)
+    const stored = fs.existsSync(path.join(tmpStore, 'keys.json')) ? fs.readFileSync(path.join(tmpStore, 'keys.json'), 'utf-8') : '[]'
+    expect(stored).not.toContain(discovered.id)
+  })
+
+  it('no other key may claim a sealed variable', () => {
+    expect(isSealedVar('PAPAREO_API_KEY')).toBe(true)
+    expect(() => keys.add({ provider: 'custom', envVar: 'PAPAREO_API_KEY', value: 'zzz' } as never)).toThrow(/sealed provider/)
+    expect(() => keys.writeKeyToEnv('h_scout', 'custom', 'zzz', { envVar: 'PAPAREO_API_KEY' })).toThrow(/sealed provider/)
+  })
+
+  it('every sealed variable is sealed in s6 and has a consumer plugin', () => {
+    for (const [provider, varName] of Object.entries(SEALED_PROVIDER_VARS)) {
+      expect(SEALED_SECRET_NAMES).toContain(varName)
+      expect(SEALED_PROVIDER_CONSUMERS[provider]).toBeTruthy()
+    }
+    expect(SEALED_SECRET_NAMES).toContain('OVENMITT_CONSUMER_CREDENTIAL')
   })
 
   it('the managed names are reserved from extraEnv', () => {

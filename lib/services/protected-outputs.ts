@@ -4,6 +4,8 @@
  * Kaitiakitanga License forbids sending to services that may keep them).
  *
  * Turning it on for an agent:
+ *   0. installs the `protected-outputs` pack (bridge plugin + skill) first,
+ *      so the plugin that pops the credential exists before it is rendered;
  *   1. writes the daemon's config (one vault, one send destination per ticked
  *      platform; default none) to <dataDir>/compose/<name>/ovenmitt/;
  *   2. adds the ovenmitt-<name> sidecar to the agent's compose, surgically
@@ -11,9 +13,11 @@
  *   3. issues the agent's consumer credential and keeps it encrypted in its
  *      own file, never on the harness overlay, so no harness API returns it;
  *   4. renders the credential and socket path into the hermes service's
- *      compose `environment:` (sealed, like Papa Reo's key) and recreates;
- *   5. installs the `protected-outputs` pack (bridge plugin + skill).
+ *      compose `environment:` (sealed, like Papa Reo's key) — only if the
+ *      bridge plugin is installed and enabled — and recreates once.
  * Any failure in 1–4 puts the compose, config and overlay back as they were.
+ * If the pack can't install, the sidecar still comes up but the credential
+ * is held back until the plugin is there (the card shows it).
  *
  * Changing destinations or TTL later only rewrites the config and restarts
  * the daemon; the agent keeps running.
@@ -46,7 +50,9 @@ import {
   type DaemonHealth,
 } from './ovenmitt'
 import { applyOvenmitt, MANAGED_ENV_NAMES, OVENMITT_SOCKET, removeOvenmitt, setManagedEnv } from './ovenmitt-compose'
-import { swarmMapComposePath, writeComposeSecret } from './sealed-env'
+import { pluginReady, sealedConsumerReady, swarmMapComposePath, writeComposeSecret } from './sealed-env'
+
+export const BRIDGE_PLUGIN = 'ovenmitt_bridge'
 
 export const PROTECTED_OUTPUTS_PACK = 'protected-outputs'
 const CREDENTIALS_FILE = 'ovenmitt-credentials.json'
@@ -114,15 +120,21 @@ function storedCredential(harnessId: string): string | null {
  * assigned to it, and the ovenmitt socket and credential when Protected
  * outputs is on. null clears an entry, so the result fully describes the
  * managed part of `environment:`.
+ *
+ * A secret is rendered only while the plugin that pops it is installed and
+ * enabled on the agent. Otherwise nothing would take it out of the gateway's
+ * environment, and every terminal child would inherit it.
  */
 export function managedEnvFor(harness: Harness): Record<string, string | null> {
   const out: Record<string, string | null> = {}
+  const agentDir = agentDataDirForName(harness.name)
   const keys = services.keys.list()
   for (const [provider, varName] of Object.entries(SEALED_PROVIDER_VARS)) {
     const key = keys.find((k) => k.provider === provider && (k.assignedTo ?? []).includes(harness.id))
-    out[varName] = key ? services.keys.getDecryptedValue(key.id) ?? null : null
+    const ready = key ? sealedConsumerReady(agentDir, varName) : false
+    out[varName] = key && ready ? services.keys.getDecryptedValue(key.id) ?? null : null
   }
-  const on = harness.ovenmitt?.enabled === true
+  const on = harness.ovenmitt?.enabled === true && pluginReady(agentDir, BRIDGE_PLUGIN)
   const credential = on ? storedCredential(harness.id) : null
   out.OVENMITT_SOCKET = on && credential ? OVENMITT_SOCKET : null
   out.OVENMITT_CONSUMER_CREDENTIAL = credential
@@ -249,7 +261,7 @@ export async function protectedOutputsStatus(harnessId: string): Promise<Protect
     ...(s?.credentialId ? { credentialId: s.credentialId } : {}),
     daemon: s?.enabled ? await daemonHealth(h.name) : 'absent',
     composeManaged: fs.existsSync(swarmMapComposePath(dataDir(), h.name)),
-    pluginInstalled: pluginInstalled(h.name, 'ovenmitt_bridge'),
+    pluginInstalled: pluginInstalled(h.name, BRIDGE_PLUGIN),
     audit: cachedAudit(h.id),
   }
 }
@@ -300,8 +312,10 @@ export async function setProtectedOutputs(
       const restarted = await disable(h, file, want)
       return { ok: true, status: (await protectedOutputsStatus(harnessId))!, restarted }
     }
+    // The plugin first: enable() renders the credential only once the plugin
+    // that pops it is installed and enabled.
+    const pack = pluginInstalled(h.name, BRIDGE_PLUGIN) ? undefined : await installPack(h, PROTECTED_OUTPUTS_PACK)
     const restarted = await enable(h, file, want)
-    const pack = pluginInstalled(h.name, 'ovenmitt_bridge') ? undefined : await installPack(h, PROTECTED_OUTPUTS_PACK)
     if (pack?.installed && !restarted) services.harness.restart(harnessId, 'recreate')
     return { ok: true, status: (await protectedOutputsStatus(harnessId))!, restarted: restarted || pack?.installed === true, ...(pack ? { pack } : {}) }
   } catch (err) {

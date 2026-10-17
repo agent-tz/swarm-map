@@ -7,8 +7,8 @@ import type { Storage } from './storage'
 import type { AuditService } from './audit'
 import { Encryption } from './encryption'
 import { assertNoNewline } from '@/lib/env-helpers'
-import { isSealedProvider } from '@/lib/key-providers'
-import { writeSealedEnv } from './sealed-env'
+import { isSealedProvider, isSealedVar } from '@/lib/key-providers'
+import { sealedConsumerReady, swarmMapComposePath, writeSealedEnv } from './sealed-env'
 
 const KEYS_FILE = 'keys.json'
 
@@ -88,6 +88,14 @@ export function upsertEnvVar(content: string, varName: string, value: string): s
 // Remove a VAR= line (if present) from a .env body.
 function removeEnvVar(content: string, varName: string): string {
   return content.replace(new RegExp(`^${varName}=.*\\n?`, 'm'), '')
+}
+
+// A sealed provider's variable is never written by any other key: a custom key
+// naming PAPAREO_API_KEY would otherwise land it in a plaintext .env.
+function assertNotSealedVar(varName: string): void {
+  if (isSealedVar(varName)) {
+    throw new Error(`${varName} belongs to a sealed provider; add it as that provider's key, not a custom one`)
+  }
 }
 
 // Remove a VAR= line from a .env file on disk; true when the file changed.
@@ -421,6 +429,7 @@ export class KeysService {
 
   // Manual add (user-input key not from a .env file)
   add(input: KeyInput & { assignedTo?: string[] }): Key {
+    if (input.envVar && !isSealedProvider(input.provider)) assertNotSealedVar(input.envVar)
     const stored = this.storage.read<StoredKey[]>(KEYS_FILE, [])
     const newKey: StoredKey = {
       // Fingerprint id (== the id discovery assigns) so an added+assigned key
@@ -487,9 +496,14 @@ export class KeysService {
 
     if (isSealedProvider(provider)) {
       const varName = this.resolveEnvVar(provider, value, hints)
-      const composeChanged = writeSealedEnv(this.dataDir, name, { [varName]: value })
+      // Rendered only while the plugin that pops it is installed and enabled;
+      // until then the assignment is recorded and the compose holds nothing.
+      // The Transcription card renders it once the plugin is in.
+      const ready = sealedConsumerReady(dataDir, varName)
+      const composeChanged = writeSealedEnv(this.dataDir, name, { [varName]: ready ? value : null })
       return stripEnvFileVar(envPath, varName) || composeChanged
     }
+    assertNotSealedVar(this.resolveEnvVar(provider, value, hints))
 
     let content = ''
     let exists = true
@@ -638,6 +652,18 @@ export class KeysService {
     const next = assignedTo ?? []
     const added = next.filter((h) => !prev.includes(h))
     const removed = prev.filter((h) => !next.includes(h))
+    const sealed = isSealedProvider(before.provider)
+
+    // Refuse before anything is saved: a sealed key can only go to an agent
+    // whose compose Swarm Map wrote.
+    if (sealed) {
+      for (const h of next) {
+        const n = h.startsWith('h_') ? idToName(h) : h
+        if (!fs.existsSync(swarmMapComposePath(this.dataDir, n))) {
+          throw new Error(`sealed keys need a compose file Swarm Map wrote, and ${n} has none`)
+        }
+      }
+    }
 
     // Persist the new assignment (materializes a discovered key if needed).
     this.update(id, { assignedTo: next })
@@ -645,7 +671,10 @@ export class KeysService {
     const value = this.getDecryptedValue(id)
     const hints: EnvVarHints = { name: before.name, envVar: before.envVar, identifier: before.identifier }
     if (value) {
-      for (const h of added) this.writeKeyToEnv(h, before.provider, value, hints)
+      // A sealed key goes to every assigned agent, not just the new ones: one
+      // discovered in an agent's .env already lists that agent, and this is
+      // what moves it out of the .env into the compose.
+      for (const h of sealed ? next : added) this.writeKeyToEnv(h, before.provider, value, hints)
     }
     for (const h of removed) this.removeKeyFromEnv(h, before.provider, hints)
 

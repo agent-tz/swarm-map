@@ -9,7 +9,9 @@
  *     plugin runs (its language detection is one of the escalation signals);
  *   - raises the memory limit to 3G unless it is already at least that
  *     (whisper large-v3-turbo peaks around 1.7 GB);
- *   - installs the `papareo-transcription` pack.
+ *   - installs the `papareo-transcription` pack, first, and then renders the
+ *     Papa Reo key (sealed) if one is assigned: a sealed key is rendered
+ *     only while the plugin that pops it is installed and enabled.
  * Whatever it replaced is kept on the overlay and put back on disable. The
  * Papa Reo key itself is a sealed key, assigned on the Keys page as usual.
  *
@@ -21,8 +23,8 @@ import path from 'path'
 import { services } from '@/lib/services'
 import type { Harness, TranscriptionSettings } from '@/lib/types'
 import { agentDataDirForName } from './harness'
-import { memoryBytes, readComposeMemory, setComposeMemory } from './ovenmitt-compose'
-import { installPack, type Fail, type PackResult, pluginInstalled } from './protected-outputs'
+import { memoryBytes, readComposeMemory, setComposeMemory, setManagedEnv } from './ovenmitt-compose'
+import { installPack, managedEnvFor, type Fail, type PackResult, pluginInstalled } from './protected-outputs'
 import { swarmMapComposePath, writeComposeSecret } from './sealed-env'
 
 export const TRANSCRIPTION_PACK = 'papareo-transcription'
@@ -162,21 +164,28 @@ export async function setTranscription(
 async function enable(h: Harness, configPath: string, config: string, composePath: string, compose: string) {
   const r = spliceStt(config, { enabled: 'false', model: TRANSCRIPTION_MODEL })
   if (!r.ok) return r
+  // The plugin before the key: the key is rendered only once the plugin that
+  // pops it is installed and enabled (managedEnvFor). installPack edits
+  // config.yaml, so the stt splice is redone on the file it leaves.
+  const pack = pluginInstalled(h.name, 'papareo_transcribe') ? undefined : await installPack(h, TRANSCRIPTION_PACK)
+  const afterPack = fs.readFileSync(configPath, 'utf-8')
+  const r2 = afterPack === config ? r : spliceStt(afterPack, { enabled: 'false', model: TRANSCRIPTION_MODEL })
+  if (!r2.ok) return r2
   const current = readComposeMemory(compose, h.name)
   // No memory line (a hand-made compose) means nothing to raise; the card shows it.
   const raise = current !== null && memoryBytes(current) < memoryBytes(TRANSCRIPTION_MEMORY)
-  const nextCompose = raise ? setComposeMemory(compose, h.name, TRANSCRIPTION_MEMORY) : compose
+  const withMemory = raise ? setComposeMemory(compose, h.name, TRANSCRIPTION_MEMORY) : compose
+  const nextCompose = setManagedEnv(withMemory, h.name, managedEnvFor(h))
   const settings: TranscriptionSettings = {
     enabled: true,
     prior: { sttEnabled: r.prior.enabled, sttModel: r.prior.model, memory: raise ? current : null },
   }
-  fs.writeFileSync(configPath, r.text, 'utf-8')
+  fs.writeFileSync(configPath, r2.text, 'utf-8')
   if (nextCompose !== compose) writeComposeSecret(composePath, nextCompose)
   services.harness.updateConfig(h.id, {
     transcription: settings,
     ...(raise ? { resources: { ...(h.resources ?? {}), memory: TRANSCRIPTION_MEMORY } } : {}),
   })
-  const pack = pluginInstalled(h.name, 'papareo_transcribe') ? undefined : await installPack(h, TRANSCRIPTION_PACK)
   services.audit.append({ who: 'admin', what: 'transcription:enable', target: h.name, meta: { memoryRaised: raise } })
   services.harness.restart(h.id, 'recreate')
   return { ok: true as const, status: transcriptionStatus(h.id)!, restarted: true, ...(pack ? { pack } : {}) }

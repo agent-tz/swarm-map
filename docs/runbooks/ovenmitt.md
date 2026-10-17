@@ -29,7 +29,9 @@ Only a compose Swarm Map wrote (`<DATA_DIR>/compose/<name>/docker-compose.yml`) 
 
 ## What the agent's container sees
 
-Only the socket volume (`ovenmitt-sock-<name>` at `/run/ovenmitt`) and two environment entries. The bridge plugin pops the credential out of the gateway's environment at load, so no tool or terminal child inherits it.
+Only the socket volume (`ovenmitt-sock-<name>` at `/run/ovenmitt`) and two environment entries. The bridge plugin pops the credential out of the gateway's environment as its module's first statement, so no tool or terminal child inherits it, even if the plugin fails to load.
+
+s6-overlay also copies every compose environment value to `/run/s6/container_environment/`, world-readable. While any sealed value is present, the compose carries a small inline config, `seal-secrets-<name>`, mounted at `/etc/cont-init.d/50-seal-secrets`. s6 runs it as root before any service starts, and it locks those copies to root (`chmod 600`). The gateway still gets the values, because its run script reads them as root before dropping to the hermes user. This needs Docker Compose 2.23 or later (inline `configs.content`).
 
 | Volume | Holds | Notes |
 |---|---|---|
@@ -42,7 +44,7 @@ Turning Protected outputs off revokes the credential, removes the service and th
 
 ## Sealed keys
 
-Some providers' keys are **sealed** (`SEALED_PROVIDERS` in `lib/key-providers.ts`; today only `papareo`). Assigning one, through the usual Keys page or a `/keys?request=papareo&assign=h_<name>` link, renders it into the hermes service's compose `environment:` instead of the `.env`, removes any `.env` copy, and keeps the compose 0600 in a 0700 directory. The plugin that uses it pops it into memory at load. Assignment is refused for an agent whose compose Swarm Map didn't write.
+Some providers' keys are **sealed** (`SEALED_PROVIDERS` in `lib/key-providers.ts`; today only `papareo`). Assigning one, through the usual Keys page or a `/keys?request=papareo&assign=h_<name>` link, renders it into the hermes service's compose `environment:` instead of the `.env`, removes any `.env` copy, and keeps the compose 0600 in a 0700 directory. The plugin that uses it pops it into memory at load. A sealed key (and the ovenmitt credential) is rendered only while that plugin is installed and listed in `plugins.enabled`: with nothing to pop it, it would sit in the gateway's environment. Until then the assignment is recorded and the compose holds nothing; turning on the card that installs the plugin renders it. If a pack fails to install, fix that and save the card again. Assignment is refused, before anything is saved, for an agent whose compose Swarm Map didn't write. No other key may name a sealed variable (a custom key with `PAPAREO_API_KEY`, say), and a sealed key can't be chosen as a new agent's LLM key.
 
 ## Audit
 
@@ -70,7 +72,7 @@ Turning it off puts back what it replaced. The Papa Reo key is a sealed key: ass
 
 The goal is that the agent cannot *accidentally* put protected content in its context. A determined process inside the agent container can still get at it, and these are the known ways:
 
-- **`/proc/<pid>/environ`.** The gateway and the other processes started from the container environment (its `s6-log`, for example) keep the credential and sealed keys in their initial environment, readable by the same uid. PID 1's is not readable.
+- **`/proc/<pid>/environ`, and the gateway's memory.** The gateway and the other processes started from the container environment (its `s6-log`, for example) keep the credential and sealed keys in their initial environment, readable by the same uid. PID 1's is not readable. The same uid can also read the gateway's memory, where the plugins hold the values.
 - **`/proc/<pid>/fd/N`** while a send is in flight. The bytes sit in an anonymous memory file for the length of one upload.
 - **The host compose file** holds sealed values in plaintext, 0600, the same as the `.env`.
 

@@ -24,6 +24,7 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import { execSync } from 'child_process'
+import { isSealedProvider, isSealedVar } from '@/lib/key-providers'
 
 const BASE_PORT = 8642
 const PORT_STEP = 10
@@ -207,6 +208,15 @@ export async function POST(request: Request) {
     // API boundary. Otherwise the pasted `llmKey` (if any) is used verbatim.
     let llmKey: string | undefined = body.llmKey || undefined
     if (existingKeyId) {
+      // A sealed key (lib/key-providers.ts) never goes into a .env, and the
+      // LLM key lands in the new agent's .env.
+      const chosen = services.keys.list().find((k) => k.id === existingKeyId)
+      if (chosen && (isSealedProvider(chosen.provider) || (chosen.envVar && isSealedVar(chosen.envVar)))) {
+        return NextResponse.json(
+          { ok: false, error: `Key "${existingKeyId}" is a sealed key and can't be used as an agent's LLM key.` },
+          { status: 400 },
+        )
+      }
       const resolved = services.keys.getDecryptedValue(existingKeyId)
       if (!resolved) {
         return NextResponse.json({ ok: false, error: `Selected key "${existingKeyId}" not found in the registry.` }, { status: 400 })

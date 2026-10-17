@@ -65,3 +65,16 @@ export const SEALED_PROVIDERS: ReadonlySet<string> = new Set(Object.keys(SEALED_
 export function isSealedProvider(provider: string): boolean {
   return SEALED_PROVIDERS.has(provider)
 }
+
+/** True for a variable name a sealed provider owns, whatever key claims it. */
+export function isSealedVar(varName: string): boolean {
+  return Object.values(SEALED_PROVIDER_VARS).includes(varName)
+}
+
+// The plugin that pops each sealed provider's key at load. A sealed value is
+// rendered into an agent's environment only while that plugin is installed
+// and enabled there: with nothing to pop it, the value would sit in the
+// gateway's environment for every terminal child to inherit.
+export const SEALED_PROVIDER_CONSUMERS: Readonly<Record<string, string>> = {
+  papareo: 'papareo_transcribe',
+}

@@ -10,6 +10,7 @@ import {
   readComposeMemory,
   memoryBytes,
   OVENMITT_SOCKET,
+  syncSealConfig,
 } from '../ovenmitt-compose'
 
 const NAME = 'scout'
@@ -149,6 +150,28 @@ describe('setManagedEnv', () => {
     const a = setManagedEnv(applyOvenmitt(base, NAME, OPTS), NAME, { OVENMITT_SOCKET })
     const b = applyOvenmitt(setManagedEnv(base, NAME, { OVENMITT_SOCKET }), NAME, OPTS)
     expect(a).toBe(b)
+  })
+})
+
+describe.each(Object.entries(lineages))('seal script on %s', (_label, make) => {
+  it('is present exactly while a secret is, and round-trips', () => {
+    const base = applyOvenmitt(make(), NAME, OPTS)
+    // The socket path is not a secret: no seal script for it alone.
+    expect(setManagedEnv(base, NAME, { OVENMITT_SOCKET })).not.toContain('seal-secrets')
+    const sealed = setManagedEnv(base, NAME, { OVENMITT_SOCKET, OVENMITT_CONSUMER_CREDENTIAL: 'ovm_x' })
+    const hermes = service(sealed, 'hermes-scout')
+    expect(hermes).toContain('      - source: seal-secrets-scout')
+    expect(hermes).toContain('        target: /etc/cont-init.d/50-seal-secrets')
+    expect(sealed.match(/^configs:/gm)).toHaveLength(1)
+    // Shell `$` is escaped for compose interpolation.
+    expect(sealed).toContain('f="/run/s6/container_environment/$$v"')
+    expect(sealed).toContain('for v in PAPAREO_API_KEY OVENMITT_CONSUMER_CREDENTIAL; do')
+    // Idempotent, and clearing the secret restores the compose exactly.
+    expect(syncSealConfig(sealed, NAME)).toBe(sealed)
+    expect(setManagedEnv(sealed, NAME, { OVENMITT_CONSUMER_CREDENTIAL: 'ovm_x' })).toBe(sealed)
+    const cleared = setManagedEnv(sealed, NAME, { OVENMITT_CONSUMER_CREDENTIAL: null })
+    expect(cleared).toBe(setManagedEnv(base, NAME, { OVENMITT_SOCKET }))
+    expect(removeOvenmitt(setManagedEnv(cleared, NAME, { OVENMITT_SOCKET: null }), NAME)).toBe(make())
   })
 })
 

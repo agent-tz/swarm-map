@@ -3,7 +3,9 @@
  * not be able to `cat` out of a file. They live in the hermes service's
  * compose `environment:` block (which outranks the .env), never in the .env,
  * and the plugin that uses each one pops it out of the process environment
- * at load.
+ * at load. They are rendered only while that plugin is installed and
+ * enabled, and s6's own copy of them is locked to root by a cont-init script
+ * the compose carries (see sealSecretsConfig in ovenmitt-compose.ts).
  *
  * Only a compose Swarm Map wrote (<dataDir>/compose/<name>/) can hold them.
  * A compose holding a sealed value is written 0600 in a 0700 directory: the
@@ -12,7 +14,33 @@
 
 import fs from 'fs'
 import path from 'path'
+import { SEALED_PROVIDER_CONSUMERS, SEALED_PROVIDER_VARS } from '@/lib/key-providers'
+import { readBlockList } from '@/lib/yaml-block-list'
 import { setManagedEnv } from './ovenmitt-compose'
+
+/**
+ * A plugin is ready to receive a sealed value when it is installed in the
+ * agent's data dir AND listed in config.yaml's plugins.enabled: only then
+ * does the gateway load it, and only a loaded plugin pops the value out of
+ * the environment. Anything less and the value would be left for terminal
+ * children to inherit.
+ */
+export function pluginReady(agentDir: string, plugin: string): boolean {
+  if (!fs.existsSync(path.join(agentDir, 'plugins', plugin, 'plugin.yaml'))) return false
+  try {
+    const config = fs.readFileSync(path.join(agentDir, 'config.yaml'), 'utf-8')
+    return (readBlockList(config, 'plugins', 'enabled') ?? []).includes(plugin)
+  } catch {
+    return false
+  }
+}
+
+/** Whether the plugin that consumes this sealed variable is ready on the agent. */
+export function sealedConsumerReady(agentDir: string, varName: string): boolean {
+  const provider = Object.keys(SEALED_PROVIDER_VARS).find((p) => SEALED_PROVIDER_VARS[p] === varName)
+  const plugin = provider ? SEALED_PROVIDER_CONSUMERS[provider] : undefined
+  return plugin ? pluginReady(agentDir, plugin) : false
+}
 
 /** The one compose file Swarm Map writes for an agent. */
 export function swarmMapComposePath(dataDir: string, agentName: string): string {

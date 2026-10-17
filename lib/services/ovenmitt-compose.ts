@@ -32,6 +32,20 @@ export const MANAGED_ENV_NAMES = [
   'OVENMITT_SOCKET',
 ] as const
 
+/**
+ * The managed names whose values are secrets. s6-overlay copies every compose
+ * `environment:` value into /run/s6/container_environment/, world-readable,
+ * at each container start; the seal script locks these to root.
+ */
+export const SEALED_SECRET_NAMES = ['PAPAREO_API_KEY', 'OVENMITT_CONSUMER_CREDENTIAL'] as const
+
+/** Where the seal script lands: s6-overlay runs /etc/cont-init.d as root before any service. */
+export const SEAL_SCRIPT_TARGET = '/etc/cont-init.d/50-seal-secrets'
+
+export function sealConfigName(agentName: string): string {
+  return `seal-secrets-${agentName}`
+}
+
 export function ovenmittServiceName(agentName: string): string {
   // Must not start with hermes-/seraph-: discovery would claim it as an agent.
   return `ovenmitt-${agentName}`
@@ -279,6 +293,97 @@ export function setManagedEnv(compose: string, agentName: string, entries: Recor
     lines.splice(keyBodyEnd(lines, envIdx, hermes), 0, ...add)
   } else if (envIdx >= 0 && keyBodyEnd(lines, envIdx, hermes) === envIdx + 1) {
     lines.splice(envIdx, 1) // an empty environment: would be null
+  }
+  return syncSealConfig(lines.join('\n'), agentName)
+}
+
+// --- the seal script -----------------------------------------------------------
+//
+// The plugins pop their secrets out of the gateway's environment at load, but
+// s6-overlay has already written each one to /run/s6/container_environment/
+// as a world-readable file, one `cat` away for the agent's terminal. The seal
+// script, run by s6 as root from /etc/cont-init.d before any service starts,
+// chmods those files to 0600. The gateway still receives the values: its run
+// script reads them with `with-contenv` as root, then drops to the hermes
+// user. The script travels inside the compose as an inline config (no host
+// file to lose or mount), and is present exactly while a sealed value is.
+
+function sealScript(): string[] {
+  // Compose interpolates config content, so every shell `$` is written `$$`.
+  return [
+    '#!/bin/sh',
+    '# Written by Swarm Map. Locks s6\'s copies of sealed values to root;',
+    '# the gateway still gets them through with-contenv, run as root.',
+    `for v in ${SEALED_SECRET_NAMES.join(' ')}; do`,
+    '  f="/run/s6/container_environment/$$v"',
+    '  if [ -e "$$f" ]; then chmod 600 "$$f"; fi',
+    'done',
+    'exit 0',
+  ]
+}
+
+/** Remove the seal script's service mount and top-level config, if present. */
+function removeSealConfig(lines: string[], agentName: string): void {
+  const name = sealConfigName(agentName)
+  const hermes = findEntry(lines, `  hermes-${agentName}:`)
+  if (hermes) {
+    const item = lines.findIndex((l, i) => i > hermes.start && i < hermes.end && l === `      - source: ${name}`)
+    if (item >= 0) {
+      let end = item + 1
+      while (end < hermes.end && /^ {8,}\S/.test(lines[end])) end++
+      lines.splice(item, end - item)
+      const h2 = findEntry(lines, `  hermes-${agentName}:`)!
+      const cfgIdx = findKey(lines, h2, 'configs')
+      if (cfgIdx >= 0 && keyBodyEnd(lines, cfgIdx, h2) === cfgIdx + 1) lines.splice(cfgIdx, 1)
+    }
+  }
+  const top = findTopLevel(lines, 'configs')
+  if (top) {
+    const entry = findEntry(lines, `  ${name}:`, top.start, top.end)
+    if (entry) lines.splice(entry.start, entry.end - entry.start)
+    const after = findTopLevel(lines, 'configs')!
+    if (after.end === after.start + 1) {
+      lines.splice(after.start, 1)
+      if (after.start > 0 && lines[after.start - 1] === '') lines.splice(after.start - 1, 1)
+    }
+  }
+}
+
+/**
+ * Make the seal script's presence match the compose: mounted while the hermes
+ * service's environment holds any sealed value, gone otherwise. Idempotent.
+ */
+export function syncSealConfig(compose: string, agentName: string): string {
+  const what = 'sealed env'
+  const lines = compose.split('\n')
+  removeSealConfig(lines, agentName)
+  let hermes = hermesBlock(lines, agentName, what)
+  const envIdx = findKey(lines, hermes, 'environment')
+  const sealed =
+    envIdx >= 0 &&
+    lines
+      .slice(envIdx + 1, keyBodyEnd(lines, envIdx, hermes))
+      .some((l) => SEALED_SECRET_NAMES.some((n) => l.startsWith(`      - ${n}=`) || l.startsWith(`      - "${n}=`)))
+  if (!sealed) return lines.join('\n')
+
+  const name = sealConfigName(agentName)
+  const mount = [`      - source: ${name}`, `        target: ${SEAL_SCRIPT_TARGET}`, '        mode: 0555']
+  const cfgIdx = findKey(lines, hermes, 'configs')
+  if (cfgIdx >= 0) {
+    lines.splice(keyBodyEnd(lines, cfgIdx, hermes), 0, ...mount)
+  } else {
+    lines.splice(keyBodyEnd(lines, envIdx, hermes), 0, '    configs:', ...mount)
+  }
+  hermes = hermesBlock(lines, agentName, what)
+
+  const decl = [`  ${name}:`, '    content: |', ...sealScript().map((l) => `      ${l}`)]
+  const top = findTopLevel(lines, 'configs')
+  if (top) {
+    if (lines[top.start] !== 'configs:') refuse(what, 'top-level configs: is not a block mapping')
+    lines.splice(top.end, 0, ...decl)
+  } else {
+    while (lines.length && lines[lines.length - 1] === '') lines.pop()
+    lines.push('', 'configs:', ...decl, '')
   }
   return lines.join('\n')
 }
