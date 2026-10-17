@@ -353,7 +353,8 @@ async function enable(h: Harness, file: string, want: { destinations: string[]; 
       ...(credentialId ? { credentialId } : {}),
     }
     services.harness.updateConfig(h.id, { ovenmitt: settings })
-    const wired = setManagedEnv(fs.readFileSync(file, 'utf-8'), h.name, managedEnvFor({ ...h, ovenmitt: settings }))
+    const unwired = fs.readFileSync(file, 'utf-8')
+    const wired = setManagedEnv(unwired, h.name, managedEnvFor({ ...h, ovenmitt: settings }))
     writeComposeSecret(file, wired)
     services.audit.append({
       who: 'admin',
@@ -361,9 +362,11 @@ async function enable(h: Harness, file: string, want: { destinations: string[]; 
       target: h.name,
       meta: { destinations: want.destinations, ttl: want.ttl },
     })
-    // A destination/TTL change is the daemon's business alone; only the
-    // first enable (new mount, new environment) needs the agent recreated.
-    if (wired === composeBefore || (wasEnabled && !issued)) return false
+    // A destination/TTL change is the daemon's business alone. The agent is
+    // recreated on the first enable (new mount, new environment), and
+    // whenever its managed environment changed (a new credential, the bridge
+    // plugin newly ready, the seal script added).
+    if (wired === composeBefore || (wasEnabled && !issued && wired === unwired)) return false
     services.harness.restart(h.id, 'recreate')
     return true
   } catch (err) {
