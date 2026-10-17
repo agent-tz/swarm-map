@@ -169,7 +169,12 @@ describe('sealed keys', () => {
     const sealed = fs.readFileSync(composeFile(), 'utf-8')
     expect(sealed).toContain('      - source: seal-secrets-scout')
     expect(sealed).toContain('        target: /etc/cont-init.d/50-seal-secrets')
-    expect(sealed).toMatch(/^configs:\n {2}seal-secrets-scout:\n {4}content: \|/m)
+    expect(sealed).toMatch(/^configs:\n {2}seal-secrets-scout:\n {4}file: \.\/seal-secrets\.sh$/m)
+    // The script sits beside the compose, executable, before the compose names it.
+    const script = path.join(path.dirname(composeFile()), 'seal-secrets.sh')
+    expect(fs.statSync(script).mode & 0o777).toBe(0o755)
+    expect(fs.readFileSync(script, 'utf-8')).toContain('for v in PAPAREO_API_KEY OVENMITT_CONSUMER_CREDENTIAL; do')
+    expect(fs.readFileSync(script, 'utf-8')).toContain('f="/run/s6/container_environment/$v"')
     keys.removeKeyFromEnv('h_scout', 'papareo')
     const cleared = fs.readFileSync(composeFile(), 'utf-8')
     expect(cleared).not.toContain('seal-secrets')

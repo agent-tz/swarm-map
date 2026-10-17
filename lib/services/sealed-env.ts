@@ -5,7 +5,8 @@
  * and the plugin that uses each one pops it out of the process environment
  * at load. They are rendered only while that plugin is installed and
  * enabled, and s6's own copy of them is locked to root by a cont-init script
- * the compose carries (see sealSecretsConfig in ovenmitt-compose.ts).
+ * the compose mounts from beside itself (see syncSealConfig in
+ * ovenmitt-compose.ts).
  *
  * Only a compose Swarm Map wrote (<dataDir>/compose/<name>/) can hold them.
  * A compose holding a sealed value is written 0600 in a 0700 directory: the
@@ -16,7 +17,7 @@ import fs from 'fs'
 import path from 'path'
 import { SEALED_PROVIDER_CONSUMERS, SEALED_PROVIDER_VARS } from '@/lib/key-providers'
 import { readBlockList } from '@/lib/yaml-block-list'
-import { setManagedEnv } from './ovenmitt-compose'
+import { SEAL_SCRIPT_FILE, sealScript, setManagedEnv, usesSealScript } from './ovenmitt-compose'
 
 /**
  * A plugin is ready to receive a sealed value when it is installed in the
@@ -47,10 +48,21 @@ export function swarmMapComposePath(dataDir: string, agentName: string): string 
   return path.join(dataDir, 'compose', agentName, 'docker-compose.yml')
 }
 
-/** Write a compose that may hold secrets: atomically, 0600, in a 0700 dir. */
+/**
+ * Write a compose that may hold secrets: atomically, 0600, in a 0700 dir.
+ * When it mounts the seal script, the script is written beside it first
+ * (0755: s6 executes it), so Docker never finds the bind source missing and
+ * creates a directory in its place.
+ */
 export function writeComposeSecret(file: string, content: string): void {
   const dir = path.dirname(file)
   fs.chmodSync(dir, 0o700)
+  const script = path.join(dir, SEAL_SCRIPT_FILE)
+  if (usesSealScript(content)) {
+    fs.writeFileSync(`${script}.tmp-${process.pid}`, sealScript(), { mode: 0o755 })
+    fs.renameSync(`${script}.tmp-${process.pid}`, script)
+    fs.chmodSync(script, 0o755)
+  }
   const tmp = `${file}.tmp-${process.pid}`
   fs.writeFileSync(tmp, content, { mode: 0o600 })
   fs.renameSync(tmp, file)

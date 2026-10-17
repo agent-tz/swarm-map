@@ -42,6 +42,14 @@ export const SEALED_SECRET_NAMES = ['PAPAREO_API_KEY', 'OVENMITT_CONSUMER_CREDEN
 /** Where the seal script lands: s6-overlay runs /etc/cont-init.d as root before any service. */
 export const SEAL_SCRIPT_TARGET = '/etc/cont-init.d/50-seal-secrets'
 
+/**
+ * The seal script's file, beside the compose (relative paths in a compose
+ * resolve against its directory). It has to be a file: Compose can't place
+ * an inline `content:` config into a read_only service, and deploy-born
+ * agents are read_only. Written by writeComposeSecret (sealed-env.ts).
+ */
+export const SEAL_SCRIPT_FILE = 'seal-secrets.sh'
+
 export function sealConfigName(agentName: string): string {
   return `seal-secrets-${agentName}`
 }
@@ -305,21 +313,27 @@ export function setManagedEnv(compose: string, agentName: string, entries: Recor
 // script, run by s6 as root from /etc/cont-init.d before any service starts,
 // chmods those files to 0600. The gateway still receives the values: its run
 // script reads them with `with-contenv` as root, then drops to the hermes
-// user. The script travels inside the compose as an inline config (no host
-// file to lose or mount), and is present exactly while a sealed value is.
+// user. The compose mounts it as a file-based config, present exactly while
+// a sealed value is; the file itself sits beside the compose.
 
-function sealScript(): string[] {
-  // Compose interpolates config content, so every shell `$` is written `$$`.
+/** The seal script's content (written to SEAL_SCRIPT_FILE, mode 0755). */
+export function sealScript(): string {
   return [
     '#!/bin/sh',
-    '# Written by Swarm Map. Locks s6\'s copies of sealed values to root;',
+    "# Written by Swarm Map. Locks s6's copies of sealed values to root;",
     '# the gateway still gets them through with-contenv, run as root.',
     `for v in ${SEALED_SECRET_NAMES.join(' ')}; do`,
-    '  f="/run/s6/container_environment/$$v"',
-    '  if [ -e "$$f" ]; then chmod 600 "$$f"; fi',
+    '  f="/run/s6/container_environment/$v"',
+    '  if [ -e "$f" ]; then chmod 600 "$f"; fi',
     'done',
     'exit 0',
-  ]
+    '',
+  ].join('\n')
+}
+
+/** Whether a compose mounts the seal script (so its file must exist beside it). */
+export function usesSealScript(compose: string): boolean {
+  return compose.includes(`    file: ./${SEAL_SCRIPT_FILE}`)
 }
 
 /** Remove the seal script's service mount and top-level config, if present. */
@@ -367,7 +381,7 @@ export function syncSealConfig(compose: string, agentName: string): string {
   if (!sealed) return lines.join('\n')
 
   const name = sealConfigName(agentName)
-  const mount = [`      - source: ${name}`, `        target: ${SEAL_SCRIPT_TARGET}`, '        mode: 0555']
+  const mount = [`      - source: ${name}`, `        target: ${SEAL_SCRIPT_TARGET}`]
   const cfgIdx = findKey(lines, hermes, 'configs')
   if (cfgIdx >= 0) {
     lines.splice(keyBodyEnd(lines, cfgIdx, hermes), 0, ...mount)
@@ -376,7 +390,7 @@ export function syncSealConfig(compose: string, agentName: string): string {
   }
   hermes = hermesBlock(lines, agentName, what)
 
-  const decl = [`  ${name}:`, '    content: |', ...sealScript().map((l) => `      ${l}`)]
+  const decl = [`  ${name}:`, `    file: ./${SEAL_SCRIPT_FILE}`]
   const top = findTopLevel(lines, 'configs')
   if (top) {
     if (lines[top.start] !== 'configs:') refuse(what, 'top-level configs: is not a block mapping')

@@ -163,9 +163,10 @@ describe.each(Object.entries(lineages))('seal script on %s', (_label, make) => {
     expect(hermes).toContain('      - source: seal-secrets-scout')
     expect(hermes).toContain('        target: /etc/cont-init.d/50-seal-secrets')
     expect(sealed.match(/^configs:/gm)).toHaveLength(1)
-    // Shell `$` is escaped for compose interpolation.
-    expect(sealed).toContain('f="/run/s6/container_environment/$$v"')
-    expect(sealed).toContain('for v in PAPAREO_API_KEY OVENMITT_CONSUMER_CREDENTIAL; do')
+    // A file, never inline content: Compose can't put inline configs into a
+    // read_only service, and deploy-born agents are read_only.
+    expect(sealed).toContain('configs:\n  seal-secrets-scout:\n    file: ./seal-secrets.sh')
+    expect(sealed).not.toContain('content:')
     // Idempotent, and clearing the secret restores the compose exactly.
     expect(syncSealConfig(sealed, NAME)).toBe(sealed)
     expect(setManagedEnv(sealed, NAME, { OVENMITT_CONSUMER_CREDENTIAL: 'ovm_x' })).toBe(sealed)
