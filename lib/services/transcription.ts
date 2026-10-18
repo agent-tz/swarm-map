@@ -9,6 +9,8 @@
  *     plugin runs (its language detection is one of the escalation signals);
  *   - raises the memory limit to 3G unless it is already at least that
  *     (whisper large-v3-turbo peaks around 1.7 GB);
+ *   - adds a `papareo` vault to Protected outputs if there is none (no
+ *     destinations: the card is where chats are allowed to receive it);
  *   - installs the `papareo-transcription` pack, first, and then renders the
  *     Papa Reo key (sealed) if one is assigned: a sealed key is rendered
  *     only while the plugin that pops it is installed and enabled.
@@ -24,7 +26,16 @@ import { services } from '@/lib/services'
 import type { Harness, TranscriptionSettings } from '@/lib/types'
 import { agentDataDirForName } from './harness'
 import { memoryBytes, readComposeMemory, setComposeMemory, setManagedEnv } from './ovenmitt-compose'
-import { installPack, managedEnvFor, type Fail, type PackResult, pluginInstalled } from './protected-outputs'
+import {
+  ensureVault,
+  installPack,
+  managedEnvFor,
+  PAPAREO_VAULT,
+  type Fail,
+  type PackResult,
+  pluginInstalled,
+  vaultsOf,
+} from './protected-outputs'
 import { swarmMapComposePath, writeComposeSecret } from './sealed-env'
 
 export const TRANSCRIPTION_PACK = 'papareo-transcription'
@@ -115,6 +126,8 @@ export type TranscriptionStatus = {
   // A Papa Reo key is assigned to this agent (sealed).
   keyAssigned: boolean
   pluginInstalled: boolean
+  // Protected outputs has the papareo vault the plugin writes to.
+  vault: boolean
   memory: string | null
 }
 
@@ -131,6 +144,7 @@ export function transcriptionStatus(harnessId: string): TranscriptionStatus | un
     protectedOutputs: h.ovenmitt?.enabled === true,
     keyAssigned: services.keys.list().some((k) => k.provider === 'papareo' && (k.assignedTo ?? []).includes(h.id)),
     pluginInstalled: pluginInstalled(h.name, 'papareo_transcribe'),
+    vault: vaultsOf(h.ovenmitt).some((v) => v.name === PAPAREO_VAULT),
     memory,
   }
 }
@@ -142,11 +156,15 @@ export async function setTranscription(
   const h = services.harness.get(harnessId)
   if (!h) return { ok: false, status: 404, error: 'Harness not found' }
   if (typeof body.enabled !== 'boolean') return { ok: false, status: 400, error: 'enabled must be true or false' }
-  if (body.enabled === (h.transcription?.enabled === true)) {
-    return { ok: true, status: transcriptionStatus(harnessId)!, restarted: false }
-  }
   if (body.enabled && !h.ovenmitt?.enabled) {
     return { ok: false, status: 409, error: 'Turn on Protected outputs first: Papa Reo transcripts go to its vault' }
+  }
+  // Before the no-op check, so enabling again sets up a vault that is missing
+  // (an agent that had Transcription on before vaults were configurable).
+  const vault = body.enabled ? await ensureVault(harnessId, PAPAREO_VAULT) : null
+  if (vault && !vault.ok) return vault
+  if (body.enabled === (h.transcription?.enabled === true)) {
+    return { ok: true, status: transcriptionStatus(harnessId)!, restarted: vault?.restarted === true }
   }
   const configPath = path.join(agentDataDirForName(h.name), 'config.yaml')
   const composePath = swarmMapComposePath(services.storage.getBaseDir(), h.name)

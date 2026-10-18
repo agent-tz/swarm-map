@@ -6,7 +6,8 @@ import { KeysService } from '../keys'
 import { Storage } from '../storage'
 import { AuditService } from '../audit'
 import { generateAgentCompose } from '../agent-deploy-templates'
-import { renderOvenmittToml, validateOvenmitt } from '../ovenmitt'
+import { renderOvenmittToml, startupRefusal, validateVaults } from '../ovenmitt'
+import { vaultsOf } from '../protected-outputs'
 import { spliceStt } from '../transcription'
 import { isSealedProvider, isSealedVar, KEY_PROVIDERS, SEALED_PROVIDER_CONSUMERS, SEALED_PROVIDER_VARS } from '@/lib/key-providers'
 import { SEALED_SECRET_NAMES } from '../ovenmitt-compose'
@@ -14,31 +15,83 @@ import { pluginReady } from '../sealed-env'
 import { RESERVED_EXTRA_ENV_NAMES, validateExtraEnv } from '../harness-compose'
 
 describe('ovenmitt config', () => {
-  it('declares no destination by default: every send is refused', () => {
-    const toml = renderOvenmittToml({ destinations: [] })
-    expect(toml).toContain('[vault.private]')
-    expect(toml).toContain('ttl             = "30d"')
-    expect(toml).toContain('expose_names    = false')
-    expect(toml).not.toContain('kind  = "send"')
+  const signal = { platform: 'signal', match: 'signal/*' }
+
+  it('has no vault by default: every put is refused', () => {
+    const toml = renderOvenmittToml({ vaults: [] })
+    expect(toml).not.toContain('[vault.')
+    expect(toml).toContain('# No vaults yet')
     expect(toml).toContain('socket_mode        = "0666"')
   })
 
-  it('one send destination per platform, named after it, matching every chat on it', () => {
-    const toml = renderOvenmittToml({ destinations: ['signal', 'discord', 'signal'], ttl: '7d' })
+  it('declares no destination on a new vault: every send is refused', () => {
+    const toml = renderOvenmittToml({ vaults: [{ name: 'papareo', ttl: '30d', destinations: [] }] })
+    expect(toml).toContain('[vault.papareo]')
+    expect(toml).toContain('ttl             = "30d"')
+    expect(toml).toContain('expose_names    = false')
+    expect(toml).not.toContain('kind  = "send"')
+  })
+
+  it('one send destination per ticked platform, named after it, with its match', () => {
+    const toml = renderOvenmittToml({
+      vaults: [
+        { name: 'papareo', ttl: '7d', destinations: [{ platform: 'signal', match: 'signal/+6421000000' }] },
+        { name: 'private', ttl: '30d', destinations: [signal, { platform: 'discord', match: 'discord/*' }] },
+      ],
+    })
+    expect(toml).toContain('[vault.papareo.destinations.signal]\nkind  = "send"\nmatch = "signal/+6421000000"')
     expect(toml).toContain('[vault.private.destinations.signal]\nkind  = "send"\nmatch = "signal/*"')
     expect(toml).toContain('[vault.private.destinations.discord]\nkind  = "send"\nmatch = "discord/*"')
-    expect(toml.match(/destinations\.signal\]/g)).toHaveLength(1)
     expect(toml).toContain('ttl             = "7d"')
   })
 
-  it('accepts only registry platforms and a plain TTL', () => {
-    expect(validateOvenmitt({ destinations: ['signal'] })).toBeNull()
-    expect(validateOvenmitt({ destinations: ['signal"]\n[vault.x'] })).toMatch(/unknown platform/)
-    expect(validateOvenmitt({ destinations: 'signal' })).toMatch(/list/)
-    expect(validateOvenmitt({ ttl: '30d' })).toBeNull()
-    expect(validateOvenmitt({ ttl: '30d"\nx' })).toMatch(/ttl/)
-    expect(validateOvenmitt({ ttl: '0d' })).toMatch(/ttl/)
-    expect(() => renderOvenmittToml({ destinations: ['nope'] })).toThrow()
+  it('a location becomes an fs destination under the exports mount', () => {
+    const toml = renderOvenmittToml({
+      vaults: [{ name: 'papareo', ttl: '30d', destinations: [], location: { hostPath: '/Users/me/transcripts', overwrite: false } }],
+    })
+    expect(toml).toContain(
+      '[vault.papareo.destinations.folder]\nkind      = "fs"\nroot      = "/var/lib/ovenmitt/exports/papareo"\noverwrite = false',
+    )
+    expect(toml).not.toContain('/Users/me')
+  })
+
+  it('accepts only safe names, registry platforms, matching patterns, plain TTLs and paths', () => {
+    const v = (over: Record<string, unknown>) => [{ name: 'papareo', ttl: '30d', destinations: [signal], ...over }]
+    expect(validateVaults(v({}))).toBeNull()
+    expect(validateVaults('x')).toMatch(/list/)
+    expect(validateVaults(v({ name: 'Papa Reo' }))).toMatch(/name/)
+    expect(validateVaults([...v({}), ...v({})])).toMatch(/twice/)
+    expect(validateVaults(v({ ttl: '30d"\nx' }))).toMatch(/ttl/)
+    expect(validateVaults(v({ ttl: '0d' }))).toMatch(/ttl/)
+    expect(validateVaults(v({ destinations: [{ platform: 'signal"]\n[vault.x', match: 'x/*' }] }))).toMatch(/unknown platform/)
+    expect(validateVaults(v({ destinations: [{ platform: 'signal', match: 'discord/*' }] }))).toMatch(/match/)
+    expect(validateVaults(v({ destinations: [{ platform: 'signal', match: 'signal/*"\nx' }] }))).toMatch(/match/)
+    expect(validateVaults(v({ destinations: [{ platform: 'signal', match: 'signal/*/x' }] }))).toMatch(/match/)
+    expect(validateVaults(v({ destinations: [signal, signal] }))).toMatch(/twice/)
+    expect(validateVaults(v({ location: { hostPath: '/srv/out', overwrite: true } }))).toBeNull()
+    expect(validateVaults(v({ location: { hostPath: 'srv/out', overwrite: true } }))).toMatch(/folder/)
+    expect(validateVaults(v({ location: { hostPath: '/srv/../etc', overwrite: true } }))).toMatch(/folder/)
+    expect(validateVaults(v({ location: { hostPath: '/srv/a:/x', overwrite: true } }))).toMatch(/folder/)
+    expect(() => renderOvenmittToml({ vaults: v({ name: 'Nope' }) as never })).toThrow()
+  })
+
+  it('explains a refused start, preferring the daemon\'s own refusal line', () => {
+    const logs = [
+      'ovenmitt: refusing to start: startup: object v_6dd153a5e924 belongs to vault "private", which is not in the config; add the vault back or move the object\'s data aside',
+      'INFO ovenmitt::daemon: store open objects=1',
+      'INFO ovenmitt::daemon: serving socket=/run/ovenmitt/ovenmitt.sock',
+    ].join('\n')
+    expect(startupRefusal(logs)).toMatch(/^the private vault still holds objects/)
+    expect(startupRefusal('a\nlast line\n')).toBe('last line')
+  })
+
+  it('reads settings from before vaults were configurable as one "private" vault', () => {
+    expect(vaultsOf(undefined)).toEqual([])
+    expect(vaultsOf({ enabled: false })).toEqual([])
+    expect(vaultsOf({ enabled: true, destinations: ['signal'], ttl: '7d' })).toEqual([
+      { name: 'private', ttl: '7d', destinations: [signal] },
+    ])
+    expect(vaultsOf({ enabled: true, destinations: ['signal'], vaults: [] })).toEqual([])
   })
 })
 

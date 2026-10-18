@@ -100,13 +100,33 @@ export type Harness = {
 
 export type OvenmittSettings = {
   enabled: boolean
-  // Platforms (surface slugs) whose chats may receive protected files. Each
-  // becomes a `send` destination named after the platform. Default none.
-  destinations: string[]
-  // Vault TTL, e.g. '30d'.
+  // The vaults the daemon serves. Default none: a vault is added on the
+  // Protected Outputs card, or by a feature that needs one (Transcription adds
+  // "papareo").
+  vaults?: OvenmittVault[]
+  // Legacy single-vault fields (before vaults were configurable). Read once and
+  // turned into a vault named "private"; never written.
+  destinations?: string[]
   ttl?: string
   // Id of the issued consumer credential (not a secret; revocation handle).
   credentialId?: string
+  // 'all' once the credential covers every vault (so vaults can be added
+  // without re-issuing it). Older credentials were scoped to "private" only.
+  credentialScope?: 'all'
+}
+
+export type OvenmittVault = {
+  // ^[a-z0-9][a-z0-9_-]{0,63}$, the daemon's own grammar.
+  name: string
+  // e.g. '30d'.
+  ttl: string
+  // Chats that may receive this vault's outputs: a `send` destination named
+  // after the platform, with the target pattern the bridge's
+  // `<platform>/<chat ref>` must match (`<platform>/*` = every chat on it).
+  destinations: { platform: string; match: string }[]
+  // Optional folder on the host that outputs may be exported to (an `fs`
+  // destination). Mounted into the vault daemon only, never the agent.
+  location?: { hostPath: string; overwrite: boolean }
 }
 
 export type TranscriptionSettings = {

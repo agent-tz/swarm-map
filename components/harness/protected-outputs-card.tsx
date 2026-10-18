@@ -1,26 +1,39 @@
 // components/harness/protected-outputs-card.tsx
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
-import { AudioLines, Loader2, ShieldCheck } from 'lucide-react'
+import { AudioLines, Loader2, Plus, ShieldCheck, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { SURFACES, isSurfaceSlug } from '@/lib/surfaces/registry'
 import type { ProtectedOutputsStatus } from '@/lib/services/protected-outputs'
 import type { TranscriptionStatus } from '@/lib/services/transcription'
+import type { OvenmittVault } from '@/lib/types'
 
 type Props = { harnessId: string }
 
 // Platforms whose suitability as a destination for licensed outputs is not
 // settled. Ticking one is allowed, but the operator is told why it is doubtful.
-const CAUTION: Record<string, string> = {
-  discord:
-    'Discord can read message content and attachments. Not a destination for Papa Reo output until Te Hiku Media clears it.',
-}
+const CAUTION: Record<string, string> = {}
 
 function label(slug: string): string {
   return isSurfaceSlug(slug) ? SURFACES[slug].label : slug
+}
+
+// The two cards depend on each other (Transcription needs Protected Outputs;
+// Transcription adds the papareo vault), so a save on either reloads both.
+const CHANGED = 'swarm-map:protected-outputs-changed'
+function announceChange() {
+  window.dispatchEvent(new Event(CHANGED))
+}
+function useReloadOnChange(load: () => void) {
+  useEffect(() => {
+    window.addEventListener(CHANGED, load)
+    return () => window.removeEventListener(CHANGED, load)
+  }, [load])
 }
 
 type SaveResponse = {
@@ -45,24 +58,27 @@ function reportPack(data: SaveResponse) {
 }
 
 /**
- * "Protected outputs": the agent's ovenmitt vault. Outputs that must never
- * enter an LLM's context go into the vault, and only reach chats on the
- * platforms ticked here.
+ * "Protected Outputs (oven-mitt)": the agent's ovenmitt vault daemon. Outputs
+ * that must never enter an LLM's context go into a vault, and only reach the
+ * chats ticked on that vault (or its export folder). No vault by default; a
+ * feature that needs one (Transcription: "papareo") adds it.
  */
 export function ProtectedOutputsCard({ harnessId }: Props) {
   const [status, setStatus] = useState<ProtectedOutputsStatus | null>(null)
   const [busy, setBusy] = useState(false)
+  const [newVault, setNewVault] = useState('')
 
-  function load() {
+  const load = useCallback(() => {
     fetch(`/api/harnesses/${harnessId}/protected-outputs`)
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => setStatus(d))
       .catch(() => setStatus(null))
-  }
-  useEffect(load, [harnessId])
+  }, [harnessId])
+  useEffect(load, [load])
+  useReloadOnChange(load)
   if (!status) return null
 
-  async function save(body: { enabled?: boolean; destinations?: string[] }) {
+  async function save(body: { enabled?: boolean; vaults?: OvenmittVault[] }): Promise<boolean> {
     setBusy(true)
     const { ok, data } = await put(`/api/harnesses/${harnessId}/protected-outputs`, body)
     setBusy(false)
@@ -72,28 +88,34 @@ export function ProtectedOutputsCard({ harnessId }: Props) {
       toast.success(data.restarted ? 'Saved — the agent is restarting.' : 'Saved.')
       reportPack(data)
     }
-    load()
+    announceChange()
+    return ok
   }
 
-  const candidates = Array.from(new Set([...status.liveSurfaces, ...status.destinations]))
-  const toggleDestination = (slug: string, on: boolean) =>
-    save({ destinations: on ? [...status.destinations, slug] : status.destinations.filter((d) => d !== slug) })
+  const vaults = status.vaults
+  const saveVault = (next: OvenmittVault) => save({ vaults: vaults.map((v) => (v.name === next.name ? next : v)) })
+  const removeVault = (name: string) => save({ vaults: vaults.filter((v) => v.name !== name) })
+  async function addVault() {
+    const name = newVault.trim()
+    if (!name) return
+    if (await save({ vaults: [...vaults, { name, ttl: status!.defaultTtl, destinations: [] }] })) setNewVault('')
+  }
 
   return (
     <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 space-y-3">
       <div className="flex items-center gap-2">
         <ShieldCheck className="h-4 w-4 text-muted-foreground" />
-        <h3 className="font-medium text-sm flex-1">Protected outputs</h3>
+        <h3 className="font-medium text-sm flex-1">Protected Outputs (oven-mitt)</h3>
         {busy && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
         <Switch
           checked={status.enabled}
           onCheckedChange={(v) => save({ enabled: v })}
           disabled={busy || !status.composeManaged}
-          aria-label="Protected outputs"
+          aria-label="Protected Outputs (oven-mitt)"
         />
       </div>
       <p className="text-xs text-muted-foreground">
-        An ovenmitt vault for outputs that must never enter the model&apos;s context. The agent holds them by handle,
+        Ovenmitt vaults for outputs that must never enter the model&apos;s context. The agent holds them by handle,
         can send them to the chat it is talking to, and cannot read them. Not the key store: API keys never go here.
       </p>
       {!status.composeManaged && (
@@ -103,25 +125,39 @@ export function ProtectedOutputsCard({ harnessId }: Props) {
       )}
       {status.enabled && (
         <>
-          <div className="space-y-1">
-            <p className="text-xs text-muted-foreground">Chats that may receive protected files (default none):</p>
-            {candidates.length === 0 && <p className="text-xs text-muted-foreground">No platform is connected yet.</p>}
-            {candidates.map((slug) => (
-              <label key={slug} className="flex items-start gap-2 text-sm cursor-pointer">
-                <input
-                  type="checkbox"
-                  className="mt-0.5 accent-[var(--accent)]"
-                  checked={status.destinations.includes(slug)}
-                  disabled={busy}
-                  onChange={(e) => toggleDestination(slug, e.target.checked)}
-                />
-                <span>
-                  {label(slug)}
-                  {CAUTION[slug] && <span className="block text-xs text-[var(--warning)]">{CAUTION[slug]}</span>}
-                </span>
-              </label>
-            ))}
-          </div>
+          {vaults.length === 0 && (
+            <p className="text-xs text-muted-foreground">No vaults yet. Add one, or turn on a feature that needs one.</p>
+          )}
+          {vaults.map((v) => (
+            <VaultSection
+              key={JSON.stringify(v)}
+              vault={v}
+              liveSurfaces={status.liveSurfaces}
+              required={status.requiredVaults.includes(v.name)}
+              busy={busy}
+              onSave={saveVault}
+              onRemove={() => removeVault(v.name)}
+            />
+          ))}
+          <form
+            className="flex items-center gap-2"
+            onSubmit={(e) => {
+              e.preventDefault()
+              addVault()
+            }}
+          >
+            <Input
+              className="h-7 text-xs font-mono flex-1"
+              placeholder="new vault name, e.g. private"
+              value={newVault}
+              onChange={(e) => setNewVault(e.target.value.toLowerCase())}
+              disabled={busy}
+              aria-label="New vault name"
+            />
+            <Button type="submit" size="sm" variant="outline" disabled={busy || !newVault.trim()}>
+              <Plus /> Add vault
+            </Button>
+          </form>
           <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
             <dt className="text-muted-foreground">Daemon</dt>
             <dd>{status.daemon}</dd>
@@ -129,8 +165,6 @@ export function ProtectedOutputsCard({ harnessId }: Props) {
             <dd>{status.credentialIssued ? `issued (${status.credentialId ?? '?'})` : 'not issued'}</dd>
             <dt className="text-muted-foreground">Bridge plugin</dt>
             <dd>{status.pluginInstalled ? 'installed' : 'not installed'}</dd>
-            <dt className="text-muted-foreground">Kept for</dt>
-            <dd>{status.ttl}</dd>
             <dt className="text-muted-foreground">Audit (last 6h)</dt>
             <dd>
               {status.audit === null
@@ -148,6 +182,159 @@ export function ProtectedOutputsCard({ harnessId }: Props) {
   )
 }
 
+type VaultSectionProps = {
+  vault: OvenmittVault
+  liveSurfaces: string[]
+  required: boolean
+  busy: boolean
+  onSave: (v: OvenmittVault) => void
+  onRemove: () => void
+}
+
+/** One vault: which chats may receive its outputs (with their match), and an optional export folder. */
+function VaultSection({ vault, liveSurfaces, required, busy, onSave, onRemove }: VaultSectionProps) {
+  const ticked = new Map(vault.destinations.map((d) => [d.platform, d.match]))
+  const candidates = Array.from(new Set([...liveSurfaces, ...ticked.keys()]))
+  // Drafts, so a half-typed match or path isn't saved on every keystroke.
+  // The section is keyed by the saved vault, so a save resets them.
+  const [matches, setMatches] = useState<Record<string, string>>({})
+  const [folderOn, setFolderOn] = useState(!!vault.location)
+  const [folder, setFolder] = useState(vault.location?.hostPath ?? '')
+  // Two-step remove inline: window.confirm isn't reliable in embedded browsers.
+  const [confirmRemove, setConfirmRemove] = useState(false)
+
+  const matchFor = (slug: string) => matches[slug] ?? ticked.get(slug) ?? `${slug}/*`
+  const withDestinations = (destinations: OvenmittVault['destinations']) => onSave({ ...vault, destinations })
+
+  function toggle(slug: string, on: boolean) {
+    const rest = vault.destinations.filter((d) => d.platform !== slug)
+    withDestinations(on ? [...rest, { platform: slug, match: matchFor(slug) }] : rest)
+  }
+  function commitMatch(slug: string) {
+    const m = matches[slug]
+    if (m === undefined || !ticked.has(slug) || m === ticked.get(slug)) return
+    withDestinations(vault.destinations.map((d) => (d.platform === slug ? { ...d, match: m.trim() } : d)))
+  }
+  function commitFolder(path: string, overwrite = vault.location?.overwrite ?? false) {
+    const p = path.trim()
+    if (!p || (p === vault.location?.hostPath && overwrite === vault.location?.overwrite)) return
+    onSave({ ...vault, location: { hostPath: p, overwrite } })
+  }
+  function toggleFolder(on: boolean) {
+    setFolderOn(on)
+    if (!on && vault.location) {
+      const next = { ...vault }
+      delete next.location
+      onSave(next)
+    }
+  }
+
+  return (
+    <div className="rounded-lg border border-[var(--border)] p-3 space-y-2">
+      <div className="flex items-center gap-2">
+        <span className="font-mono text-sm flex-1">{vault.name}</span>
+        <span className="text-xs text-muted-foreground">kept for {vault.ttl}</span>
+        {required ? (
+          <span className="text-xs text-muted-foreground">needed by Transcription</span>
+        ) : confirmRemove ? (
+          <>
+            <Button size="xs" variant="destructive" onClick={onRemove} disabled={busy}>
+              Remove
+            </Button>
+            <Button size="xs" variant="ghost" onClick={() => setConfirmRemove(false)} disabled={busy}>
+              Cancel
+            </Button>
+          </>
+        ) : (
+          <Button
+            size="icon-xs"
+            variant="ghost"
+            onClick={() => setConfirmRemove(true)}
+            disabled={busy}
+            aria-label={`Remove the ${vault.name} vault`}
+          >
+            <Trash2 />
+          </Button>
+        )}
+      </div>
+      {confirmRemove && (
+        <p className="text-xs text-[var(--warning)]">
+          Objects already in {vault.name} stay on disk, encrypted, but can no longer be sent.
+        </p>
+      )}
+      <div className="space-y-1">
+        <p className="text-xs text-muted-foreground">Chats that may receive outputs:</p>
+        {candidates.length === 0 && <p className="text-xs text-muted-foreground">No platform is connected yet.</p>}
+        {candidates.map((slug) => (
+          <div key={slug} className="flex items-center gap-2 text-sm">
+            <label className="flex items-center gap-2 cursor-pointer w-28 shrink-0">
+              <input
+                type="checkbox"
+                className="accent-[var(--accent)]"
+                checked={ticked.has(slug)}
+                disabled={busy}
+                onChange={(e) => toggle(slug, e.target.checked)}
+              />
+              {label(slug)}
+            </label>
+            <Input
+              className="h-7 text-xs font-mono"
+              value={matchFor(slug)}
+              disabled={busy}
+              onChange={(e) => setMatches((m) => ({ ...m, [slug]: e.target.value }))}
+              onBlur={() => commitMatch(slug)}
+              onKeyDown={(e) => e.key === 'Enter' && commitMatch(slug)}
+              aria-label={`${label(slug)} match`}
+              title="Which chats on this platform: <platform>/* is every chat, or name one chat exactly"
+            />
+            {CAUTION[slug] && <span className="block text-xs text-[var(--warning)]">{CAUTION[slug]}</span>}
+          </div>
+        ))}
+      </div>
+      <div className="space-y-1">
+        <label className="flex items-center gap-2 text-sm cursor-pointer">
+          <input
+            type="checkbox"
+            className="accent-[var(--accent)]"
+            checked={folderOn}
+            disabled={busy}
+            onChange={(e) => toggleFolder(e.target.checked)}
+          />
+          Also allow exports to a folder
+        </label>
+        {folderOn && (
+          <>
+            <Input
+              className="h-7 text-xs font-mono"
+              placeholder="/absolute/path/on/this/machine"
+              value={folder}
+              disabled={busy}
+              onChange={(e) => setFolder(e.target.value)}
+              onBlur={() => commitFolder(folder)}
+              onKeyDown={(e) => e.key === 'Enter' && commitFolder(folder)}
+              aria-label={`${vault.name} export folder`}
+            />
+            <label className="flex items-center gap-2 text-xs cursor-pointer">
+              <input
+                type="checkbox"
+                className="accent-[var(--accent)]"
+                checked={vault.location?.overwrite ?? false}
+                disabled={busy || !vault.location}
+                onChange={(e) => commitFolder(vault.location!.hostPath, e.target.checked)}
+              />
+              Overwrite files with the same name
+            </label>
+            <p className="text-xs text-muted-foreground">
+              The folder must already exist. Only the vault daemon mounts it, never the agent, and files land there in
+              plain text.
+            </p>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
 /**
  * "Transcription (Papa Reo escalation)": transcripts of recordings, sent to
  * Papa Reo when they may contain te reo Māori. Needs Protected outputs.
@@ -156,13 +343,14 @@ export function TranscriptionCard({ harnessId }: Props) {
   const [status, setStatus] = useState<TranscriptionStatus | null>(null)
   const [busy, setBusy] = useState(false)
 
-  function load() {
+  const load = useCallback(() => {
     fetch(`/api/harnesses/${harnessId}/transcription`)
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => setStatus(d))
       .catch(() => setStatus(null))
-  }
-  useEffect(load, [harnessId])
+  }, [harnessId])
+  useEffect(load, [load])
+  useReloadOnChange(load)
   if (!status) return null
 
   async function save(enabled: boolean) {
@@ -174,7 +362,7 @@ export function TranscriptionCard({ harnessId }: Props) {
       toast.success('Saved — the agent is restarting.')
       reportPack(data)
     }
-    load()
+    announceChange()
   }
 
   return (
@@ -192,10 +380,18 @@ export function TranscriptionCard({ harnessId }: Props) {
       </div>
       <p className="text-xs text-muted-foreground">
         Recordings people send get a transcript back as a file. English is transcribed locally; recordings that may
-        contain te reo Māori go to Papa Reo, and the transcript goes through Protected outputs without the model
+        contain te reo Māori go to Papa Reo, and the transcript goes to the papareo vault without the model
         reading it.
       </p>
-      {!status.protectedOutputs && <p className="text-xs text-[var(--warning)]">Turn on Protected outputs first.</p>}
+      {!status.protectedOutputs && <p className="text-xs text-[var(--warning)]">Turn on Protected Outputs first.</p>}
+      {status.enabled && !status.vault && (
+        <p className="text-xs text-[var(--warning)]">
+          There is no papareo vault for transcripts yet.{' '}
+          <button className="underline" disabled={busy} onClick={() => save(true)}>
+            Set it up
+          </button>
+        </p>
+      )}
       <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
         <dt className="text-muted-foreground">Papa Reo key</dt>
         <dd>

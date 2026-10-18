@@ -74,6 +74,11 @@ export type OvenmittComposeOptions = {
   image: string
   /** Host path of the generated ovenmitt.toml (mounted read-only). */
   configPath: string
+  /**
+   * Host folders vaults may export to, each bind-mounted into the daemon
+   * (never the agent) at /var/lib/ovenmitt/exports/<vault>.
+   */
+  locations?: { vault: string; hostPath: string }[]
 }
 
 const refuse = (what: string, why: string): never => {
@@ -145,6 +150,7 @@ function sidecarBlock(agentName: string, opts: OvenmittComposeOptions): string[]
     `      - ${v.audit}:/var/lib/ovenmitt/audit`,
     `      - ${v.sock}:${OVENMITT_SOCKET_DIR}`,
     `      - ${opts.configPath}:/etc/ovenmitt/ovenmitt.toml:ro`,
+    ...(opts.locations ?? []).map((l) => `      - ${l.hostPath}:/var/lib/ovenmitt/exports/${l.vault}`),
     `    healthcheck:`,
     `      test: ["CMD-SHELL", "test -S ${OVENMITT_SOCKET}"]`,
     `      interval: 5s`,
@@ -164,6 +170,11 @@ export function applyOvenmitt(compose: string, agentName: string, opts: Ovenmitt
   assertNoNewline(opts.configPath, 'ovenmitt config path')
   if (!opts.configPath.startsWith('/') || opts.configPath.includes(':')) {
     refuse(what, `config path must be absolute and colon-free: ${opts.configPath}`)
+  }
+  for (const l of opts.locations ?? []) {
+    if (!/^\/[A-Za-z0-9._/-]+$/.test(l.hostPath) || !/^[a-z0-9][a-z0-9_-]*$/.test(l.vault)) {
+      refuse(what, `export folder must be an absolute path of letters, digits and . _ / -: ${l.hostPath}`)
+    }
   }
   const lines = removeOvenmitt(compose, agentName).split('\n')
   const svc = ovenmittServiceName(agentName)

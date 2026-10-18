@@ -6,8 +6,9 @@
  * Turning it on for an agent:
  *   0. installs the `protected-outputs` pack (bridge plugin + skill) first,
  *      so the plugin that pops the credential exists before it is rendered;
- *   1. writes the daemon's config (one vault, one send destination per ticked
- *      platform; default none) to <dataDir>/compose/<name>/ovenmitt/;
+ *   1. writes the daemon's config (the configured vaults, default none; per
+ *      vault, one send destination per ticked platform and an optional
+ *      export folder) to <dataDir>/compose/<name>/ovenmitt/;
  *   2. adds the ovenmitt-<name> sidecar to the agent's compose, surgically
  *      (works on deploy-born composes too) and starts it;
  *   3. issues the agent's consumer credential and keeps it encrypted in its
@@ -19,8 +20,9 @@
  * If the pack can't install, the sidecar still comes up but the credential
  * is held back until the plugin is there (the card shows it).
  *
- * Changing destinations or TTL later only rewrites the config and restarts
- * the daemon; the agent keeps running.
+ * Changing vaults later only rewrites the config and restarts the daemon;
+ * the agent keeps running. The credential covers every vault, so adding one
+ * needs no new credential.
  */
 
 import fs from 'fs'
@@ -28,7 +30,7 @@ import path from 'path'
 import { services } from '@/lib/services'
 import { SEALED_PROVIDER_VARS } from '@/lib/key-providers'
 import { SURFACES, SURFACE_SLUGS } from '@/lib/surfaces/registry'
-import type { Harness, OvenmittSettings } from '@/lib/types'
+import type { Harness, OvenmittSettings, OvenmittVault } from '@/lib/types'
 import { installArtifacts } from './artifacts-manifest'
 import { ensurePluginsEnabled } from './artifacts-sync'
 import { loadBasePackage, readStamp, STAMP_FILE, validateSelection } from './base-package'
@@ -36,7 +38,9 @@ import { Encryption } from './encryption'
 import { agentDataDirForName } from './harness'
 import {
   DEFAULT_TTL,
+  LEGACY_VAULT,
   auditCheck,
+  defaultMatch,
   daemonHealth,
   issueCredential,
   ovenmittConfigPath,
@@ -45,7 +49,7 @@ import {
   renderOvenmittToml,
   revokeCredential,
   startSidecar,
-  validateOvenmitt,
+  validateVaults,
   type AuditSummary,
   type DaemonHealth,
 } from './ovenmitt'
@@ -64,8 +68,11 @@ export type PackResult = { pack: string; installed: boolean; error?: string; plu
 
 export type ProtectedOutputsStatus = {
   enabled: boolean
-  destinations: string[]
-  ttl: string
+  vaults: OvenmittVault[]
+  // Vaults a feature depends on (e.g. papareo while Transcription is on);
+  // the card won't remove them.
+  requiredVaults: string[]
+  defaultTtl: string
   // Platforms this agent is connected to (candidates for destinations).
   liveSurfaces: string[]
   credentialIssued: boolean
@@ -75,6 +82,40 @@ export type ProtectedOutputsStatus = {
   composeManaged: boolean
   pluginInstalled: boolean
   audit: AuditSummary | null
+}
+
+/**
+ * The vaults an agent's settings describe. Settings from before vaults were
+ * configurable (a `destinations` list) become one vault named "private",
+ * which is where those agents' objects already are.
+ */
+export function vaultsOf(s: OvenmittSettings | undefined): OvenmittVault[] {
+  if (!s) return []
+  if (s.vaults) return s.vaults
+  if (s.destinations === undefined) return []
+  return [
+    {
+      name: LEGACY_VAULT,
+      ttl: s.ttl ?? DEFAULT_TTL,
+      destinations: s.destinations.map((p) => ({ platform: p, match: defaultMatch(p) })),
+    },
+  ]
+}
+
+/** Vaults something else on this agent depends on. */
+export function requiredVaults(h: Harness): string[] {
+  return h.transcription?.enabled ? [PAPAREO_VAULT] : []
+}
+
+/** The vault the papareo transcription plugin writes to. */
+export const PAPAREO_VAULT = 'papareo'
+
+function composeOptions(h: Harness, vaults: OvenmittVault[]) {
+  return {
+    image: ovenmittImage(),
+    configPath: ovenmittConfigPath(dataDir(), h.name),
+    locations: vaults.flatMap((v) => (v.location ? [{ vault: v.name, hostPath: v.location.hostPath }] : [])),
+  }
 }
 
 function dataDir(): string {
@@ -149,10 +190,7 @@ export function managedEnvFor(harness: Harness): Record<string, string | null> {
 export function reapplyManagedWiring(compose: string, harness: Harness): string {
   let out = compose
   if (harness.ovenmitt?.enabled) {
-    out = applyOvenmitt(out, harness.name, {
-      image: ovenmittImage(),
-      configPath: ovenmittConfigPath(dataDir(), harness.name),
-    })
+    out = applyOvenmitt(out, harness.name, composeOptions(harness, vaultsOf(harness.ovenmitt)))
   }
   const env = managedEnvFor(harness)
   const present = MANAGED_ENV_NAMES.some((n) => out.includes(`- ${n}=`) || out.includes(`- "${n}=`))
@@ -254,8 +292,9 @@ export async function protectedOutputsStatus(harnessId: string): Promise<Protect
   const s = h.ovenmitt
   return {
     enabled: s?.enabled === true,
-    destinations: s?.destinations ?? [],
-    ttl: s?.ttl ?? DEFAULT_TTL,
+    vaults: vaultsOf(s),
+    requiredVaults: requiredVaults(h),
+    defaultTtl: DEFAULT_TTL,
     liveSurfaces: liveSurfaces(h.name),
     credentialIssued: storedCredential(h.id) !== null,
     ...(s?.credentialId ? { credentialId: s.credentialId } : {}),
@@ -273,21 +312,33 @@ export type SetResult =
   | Fail
 
 /**
- * Apply a Protected outputs change: { enabled?, destinations?, ttl? }.
- * Enabling on an enabled agent with new destinations/TTL only reconfigures
- * the daemon.
+ * Apply a Protected outputs change: { enabled?, vaults? }. `vaults` replaces
+ * the whole list. Changing vaults on an enabled agent only reconfigures the
+ * daemon (and recreates it when an export folder is added or removed).
  */
 export async function setProtectedOutputs(
   harnessId: string,
-  body: { enabled?: unknown; destinations?: unknown; ttl?: unknown },
+  body: { enabled?: unknown; vaults?: unknown },
 ): Promise<SetResult> {
   const h = services.harness.get(harnessId)
   if (!h) return { ok: false, status: 404, error: 'Harness not found' }
   if (h.runtime !== 'hermes') return { ok: false, status: 400, error: 'Protected outputs needs a Hermes agent' }
-  const invalid = validateOvenmitt(body)
-  if (invalid) return { ok: false, status: 400, error: invalid }
+  if (body.vaults !== undefined) {
+    const invalid = validateVaults(body.vaults)
+    if (invalid) return { ok: false, status: 400, error: invalid }
+  }
   if (body.enabled !== undefined && typeof body.enabled !== 'boolean') {
     return { ok: false, status: 400, error: 'enabled must be true or false' }
+  }
+  const vaults = (body.vaults as OvenmittVault[] | undefined) ?? vaultsOf(h.ovenmitt)
+  const missing = requiredVaults(h).filter((n) => !vaults.some((v) => v.name === n))
+  if (missing.length) {
+    return { ok: false, status: 409, error: `Turn off Transcription first: it needs the ${missing.join(', ')} vault` }
+  }
+  for (const v of vaults) {
+    if (v.location && !isDirectory(v.location.hostPath)) {
+      return { ok: false, status: 400, error: `vault ${v.name}: ${v.location.hostPath} is not a folder on this machine` }
+    }
   }
   const file = swarmMapComposePath(dataDir(), h.name)
   if (!fs.existsSync(file)) {
@@ -301,21 +352,17 @@ export async function setProtectedOutputs(
   inFlight.add(harnessId)
   try {
     const enabled = body.enabled === undefined ? h.ovenmitt?.enabled === true : body.enabled
-    const want = {
-      destinations: (body.destinations as string[] | undefined) ?? h.ovenmitt?.destinations ?? [],
-      ttl: (body.ttl as string | undefined) ?? h.ovenmitt?.ttl ?? DEFAULT_TTL,
-    }
     if (!enabled) {
       if (h.transcription?.enabled) {
         return { ok: false, status: 409, error: 'Turn off Transcription first: it depends on Protected outputs' }
       }
-      const restarted = await disable(h, file, want)
+      const restarted = await disable(h, file, vaults)
       return { ok: true, status: (await protectedOutputsStatus(harnessId))!, restarted }
     }
     // The plugin first: enable() renders the credential only once the plugin
     // that pops it is installed and enabled.
     const pack = pluginInstalled(h.name, BRIDGE_PLUGIN) ? undefined : await installPack(h, PROTECTED_OUTPUTS_PACK)
-    const restarted = await enable(h, file, want)
+    const restarted = await enable(h, file, vaults)
     if (pack?.installed && !restarted) services.harness.restart(harnessId, 'recreate')
     return { ok: true, status: (await protectedOutputsStatus(harnessId))!, restarted: restarted || pack?.installed === true, ...(pack ? { pack } : {}) }
   } catch (err) {
@@ -325,32 +372,54 @@ export async function setProtectedOutputs(
   }
 }
 
-async function enable(h: Harness, file: string, want: { destinations: string[]; ttl: string }): Promise<boolean> {
+/**
+ * Add a vault (no destinations, default TTL) if the agent has none by that
+ * name. For features that need their own vault, e.g. Transcription.
+ */
+export async function ensureVault(harnessId: string, name: string): Promise<SetResult | null> {
+  const h = services.harness.get(harnessId)
+  if (!h) return { ok: false, status: 404, error: 'Harness not found' }
+  const vaults = vaultsOf(h.ovenmitt)
+  if (vaults.some((v) => v.name === name)) return null
+  return setProtectedOutputs(harnessId, { vaults: [...vaults, { name, ttl: DEFAULT_TTL, destinations: [] }] })
+}
+
+function isDirectory(p: string): boolean {
+  try {
+    return fs.statSync(p).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+async function enable(h: Harness, file: string, vaults: OvenmittVault[]): Promise<boolean> {
   const cfgPath = ovenmittConfigPath(dataDir(), h.name)
   const composeBefore = fs.readFileSync(file, 'utf-8')
   const tomlBefore = fs.existsSync(cfgPath) ? fs.readFileSync(cfgPath, 'utf-8') : null
   const overlayBefore = h.ovenmitt
   const wasEnabled = overlayBefore?.enabled === true
+  const credentialBefore = storedCredential(h.id)
   let issued: { id: string; token: string } | null = null
   try {
-    const toml = renderOvenmittToml(want)
+    const toml = renderOvenmittToml({ vaults })
     fs.mkdirSync(path.dirname(cfgPath), { recursive: true })
     fs.writeFileSync(cfgPath, toml, { mode: 0o644 })
-    const withSidecar = applyOvenmitt(composeBefore, h.name, { image: ovenmittImage(), configPath: cfgPath })
+    const withSidecar = applyOvenmitt(composeBefore, h.name, composeOptions(h, vaults))
     if (withSidecar !== composeBefore) writeComposeSecret(file, withSidecar)
     await startSidecar(file, h.name, tomlBefore !== null && tomlBefore !== toml)
 
     let credentialId = overlayBefore?.credentialId
-    if (!storedCredential(h.id)) {
+    // A credential from before vaults were configurable covers "private"
+    // only; replace it with one that covers every vault.
+    if (!credentialBefore || overlayBefore?.credentialScope !== 'all') {
       issued = await issueCredential(h.name)
       storeCredential(h.id, issued.token)
       credentialId = issued.id
     }
     const settings: OvenmittSettings = {
       enabled: true,
-      destinations: want.destinations,
-      ttl: want.ttl,
-      ...(credentialId ? { credentialId } : {}),
+      vaults,
+      ...(credentialId ? { credentialId, credentialScope: 'all' as const } : {}),
     }
     services.harness.updateConfig(h.id, { ovenmitt: settings })
     const unwired = fs.readFileSync(file, 'utf-8')
@@ -360,8 +429,11 @@ async function enable(h: Harness, file: string, want: { destinations: string[]; 
       who: 'admin',
       what: wasEnabled ? 'protected-outputs:update' : 'protected-outputs:enable',
       target: h.name,
-      meta: { destinations: want.destinations, ttl: want.ttl },
+      meta: { vaults: vaults.map((v) => ({ name: v.name, destinations: v.destinations, folder: v.location?.hostPath ?? null })) },
     })
+    if (issued && credentialBefore && overlayBefore?.credentialId) {
+      await revokeCredential(h.name, overlayBefore.credentialId).catch(() => false)
+    }
     // A destination/TTL change is the daemon's business alone. The agent is
     // recreated on the first enable (new mount, new environment), and
     // whenever its managed environment changed (a new credential, the bridge
@@ -375,7 +447,7 @@ async function enable(h: Harness, file: string, want: { destinations: string[]; 
     else fs.writeFileSync(cfgPath, tomlBefore, { mode: 0o644 })
     services.harness.updateConfig(h.id, { ovenmitt: overlayBefore })
     if (issued) {
-      storeCredential(h.id, null)
+      storeCredential(h.id, credentialBefore)
       await revokeCredential(h.name, issued.id).catch(() => false)
     }
     if (!wasEnabled) await removeSidecar(h.name)
@@ -383,10 +455,10 @@ async function enable(h: Harness, file: string, want: { destinations: string[]; 
   }
 }
 
-async function disable(h: Harness, file: string, want: { destinations: string[]; ttl: string }): Promise<boolean> {
+async function disable(h: Harness, file: string, vaults: OvenmittVault[]): Promise<boolean> {
   if (h.ovenmitt?.credentialId) await revokeCredential(h.name, h.ovenmitt.credentialId).catch(() => false)
   storeCredential(h.id, null)
-  const settings: OvenmittSettings = { enabled: false, destinations: want.destinations, ttl: want.ttl }
+  const settings: OvenmittSettings = { enabled: false, vaults }
   services.harness.updateConfig(h.id, { ovenmitt: settings })
   const before = fs.readFileSync(file, 'utf-8')
   const after = setManagedEnv(removeOvenmitt(before, h.name), h.name, managedEnvFor({ ...h, ovenmitt: settings }))

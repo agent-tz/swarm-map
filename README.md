@@ -186,7 +186,7 @@ Any AI agent (Claude Code, Hermes, etc.) can orchestrate your fleet via the REST
 | `POST` | `/api/cascades/:name/apply` | Port a cascade onto a harness (`{ harnessId, restart? }`); refuses (400, no write, no restart) if the harness lacks a provider's key |
 | `POST` | `/api/harnesses/:id/artifacts/sync` | Adopt/update the base package on an existing agent, add-only (`{ dryRun?, force?, surface?, packs?, assignKeys?, includeVision? }`) |
 | `GET` | `/api/harnesses/:id/base-package/drift` | Report-only drift against the base package (fixes nothing) |
-| `GET`/`PUT` | `/api/harnesses/:id/protected-outputs` | ovenmitt vault status (`?audit=refresh` runs the audit check now) / change (`{ enabled?, destinations?, ttl? }`) |
+| `GET`/`PUT` | `/api/harnesses/:id/protected-outputs` | ovenmitt vault status (`?audit=refresh` runs the audit check now) / change (`{ enabled?, vaults? }`; each vault `{ name, ttl, destinations: [{ platform, match }], location? }`) |
 | `GET`/`PUT` | `/api/harnesses/:id/transcription` | Papa Reo escalation status / change (`{ enabled }`); needs Protected outputs |
 | `POST` | `/api/setup/deploy` | Deploy new agent (full wizard payload) |
 | `POST` | `/api/setup/detect` | Scan for Hermes compose directories |

@@ -14,6 +14,7 @@ import { execFile } from 'child_process'
 import path from 'path'
 import { promisify } from 'util'
 import { SURFACE_SLUGS } from '@/lib/surfaces/registry'
+import type { OvenmittVault } from '@/lib/types'
 import { OVENMITT_SOCKET, ovenmittServiceName } from './ovenmitt-compose'
 
 const execFileAsync = promisify(execFile)
@@ -29,43 +30,82 @@ export function ovenmittImage(): string {
   return process.env.OVENMITT_IMAGE || DEFAULT_OVENMITT_IMAGE
 }
 
-export const VAULT = 'private'
+/** The vault older single-vault settings are migrated into. */
+export const LEGACY_VAULT = 'private'
 export const DEFAULT_TTL = '30d'
+/** The `fs` destination a vault's location becomes. Not a platform slug. */
+export const FOLDER_DESTINATION = 'folder'
+/** Where a vault's location is mounted inside the daemon container. */
+export const EXPORTS_DIR = '/var/lib/ovenmitt/exports'
 const TTL = /^[1-9][0-9]{0,4}[smhd]$/
+// The daemon's name grammar (vaults and destinations).
+const VAULT_NAME = /^[a-z0-9][a-z0-9_-]{0,63}$/
+// R-DST-6: a literal over [A-Za-z0-9:_./+-], optionally ending in /*.
+const MATCH = /^[A-Za-z0-9:_.+-][A-Za-z0-9:_./+-]*(\/\*)?$/
+// A host folder: absolute, no colon (compose volume syntax), no whitespace or quotes.
+const HOST_PATH = /^\/[A-Za-z0-9._/-]+$/
 
 export function ovenmittConfigPath(dataDir: string, agentName: string): string {
   return path.join(dataDir, 'compose', agentName, 'ovenmitt', 'ovenmitt.toml')
 }
 
-/** Problems with requested settings, or null. Checked before anything is written. */
-export function validateOvenmitt(input: { destinations?: unknown; ttl?: unknown }): string | null {
-  if (input.destinations !== undefined) {
-    if (!Array.isArray(input.destinations)) return 'destinations must be a list of platforms'
-    for (const d of input.destinations) {
-      if (typeof d !== 'string' || !(SURFACE_SLUGS as readonly string[]).includes(d)) {
-        return `unknown platform: ${String(d)}`
+/** A platform's default target pattern: every chat on it. */
+export function defaultMatch(platform: string): string {
+  return `${platform}/*`
+}
+
+/**
+ * Problems with requested vaults, or null. Checked before anything is
+ * written, so only these shapes can reach the config file.
+ */
+export function validateVaults(vaults: unknown): string | null {
+  if (!Array.isArray(vaults)) return 'vaults must be a list'
+  const names = new Set<string>()
+  for (const v of vaults as Record<string, unknown>[]) {
+    if (!v || typeof v !== 'object') return 'each vault must be an object'
+    if (typeof v.name !== 'string' || !VAULT_NAME.test(v.name)) {
+      return `vault name ${JSON.stringify(v.name)} is invalid: lowercase letters, digits, - and _, starting with a letter or digit`
+    }
+    if (names.has(v.name)) return `vault ${v.name} is listed twice`
+    names.add(v.name)
+    if (typeof v.ttl !== 'string' || !TTL.test(v.ttl)) return `vault ${v.name}: ttl must look like 30d, 12h or 90m`
+    if (!Array.isArray(v.destinations)) return `vault ${v.name}: destinations must be a list`
+    const platforms = new Set<string>()
+    for (const d of v.destinations as Record<string, unknown>[]) {
+      const p = d?.platform
+      if (typeof p !== 'string' || !(SURFACE_SLUGS as readonly string[]).includes(p)) {
+        return `vault ${v.name}: unknown platform ${JSON.stringify(p)}`
+      }
+      if (platforms.has(p)) return `vault ${v.name}: ${p} is listed twice`
+      platforms.add(p)
+      const m = d.match
+      // The bridge's target is `<platform>/<chat ref>`, so anything else never matches.
+      if (typeof m !== 'string' || !MATCH.test(m) || !m.startsWith(`${p}/`) || m.length > 256) {
+        return `vault ${v.name}: ${p} match must start with "${p}/" and use only letters, digits and : _ . / + - (optionally ending in /*)`
       }
     }
-  }
-  if (input.ttl !== undefined && (typeof input.ttl !== 'string' || !TTL.test(input.ttl))) {
-    return 'ttl must look like 30d, 12h or 90m'
+    if (v.location !== undefined) {
+      const l = v.location as Record<string, unknown> | null
+      if (!l || typeof l !== 'object') return `vault ${v.name}: location must be an object`
+      if (typeof l.hostPath !== 'string' || !HOST_PATH.test(l.hostPath) || l.hostPath.split('/').includes('..')) {
+        return `vault ${v.name}: folder must be an absolute path of letters, digits and . _ / -`
+      }
+      if (typeof l.overwrite !== 'boolean') return `vault ${v.name}: overwrite must be true or false`
+    }
   }
   return null
 }
 
 /**
- * The operator config. Built only from the closed set of platform slugs and a
- * validated TTL, so nothing typed into a form reaches the file verbatim. One
- * vault; one `send` destination per platform whose chats may receive
- * protected files, named after the platform and matching every chat on it.
- * That naming is the contract with the bridge plugin, which declares
- * `<platform>/<chat ref>` as its target.
+ * The operator config. Built only from validated vaults, so nothing typed
+ * into a form reaches the file unchecked. Per vault: one `send` destination
+ * per platform whose chats may receive its outputs, named after the platform
+ * (the contract with the bridge plugin, which declares `<platform>/<chat ref>`
+ * as its target), and an `fs` destination when it has a location.
  */
-export function renderOvenmittToml(opts: { destinations: string[]; ttl?: string }): string {
-  const err = validateOvenmitt(opts)
+export function renderOvenmittToml(opts: { vaults: OvenmittVault[] }): string {
+  const err = validateVaults(opts.vaults)
   if (err) throw new Error(err)
-  const ttl = opts.ttl ?? DEFAULT_TTL
-  const platforms = [...new Set(opts.destinations)].sort()
   const lines = [
     '# Generated by Swarm Map (Protected outputs). Edits here are overwritten.',
     '# The daemon reads this at start; the agent container never sees it.',
@@ -79,17 +119,25 @@ export function renderOvenmittToml(opts: { destinations: string[]; ttl?: string 
     'audit_log          = "/var/lib/ovenmitt/audit/audit.jsonl"',
     'credentials        = "/var/lib/ovenmitt/data/credentials.toml"',
     'ttl_sweep_interval = "5m"',
-    '',
-    `[vault.${VAULT}]`,
-    'expose_names    = false',
-    `ttl             = "${ttl}"`,
-    'max_object_size = "64MiB"',
   ]
-  for (const p of platforms) {
-    lines.push('', `[vault.${VAULT}.destinations.${p}]`, 'kind  = "send"', `match = "${p}/*"`)
-  }
-  if (platforms.length === 0) {
-    lines.push('', '# No platform may receive protected files yet: every send is refused (and audited).')
+  if (opts.vaults.length === 0) lines.push('', '# No vaults yet: every put is refused.')
+  for (const v of [...opts.vaults].sort((a, b) => a.name.localeCompare(b.name))) {
+    lines.push('', `[vault.${v.name}]`, 'expose_names    = false', `ttl             = "${v.ttl}"`, 'max_object_size = "64MiB"')
+    for (const d of [...v.destinations].sort((a, b) => a.platform.localeCompare(b.platform))) {
+      lines.push('', `[vault.${v.name}.destinations.${d.platform}]`, 'kind  = "send"', `match = "${d.match}"`)
+    }
+    if (v.location) {
+      lines.push(
+        '',
+        `[vault.${v.name}.destinations.${FOLDER_DESTINATION}]`,
+        'kind      = "fs"',
+        `root      = "${EXPORTS_DIR}/${v.name}"`,
+        `overwrite = ${v.location.overwrite}`,
+      )
+    }
+    if (v.destinations.length === 0) {
+      lines.push('', `# No chat may receive ${v.name}'s outputs yet: every send is refused (and audited).`)
+    }
   }
   return lines.join('\n') + '\n'
 }
@@ -129,12 +177,28 @@ export async function startSidecar(composeFile: string, agentName: string, recre
     const h = await daemonHealth(agentName)
     if (h === 'healthy') return
     if (h === 'unhealthy' || h === 'absent') {
-      const logs = await run(['logs', '--tail', '5', svc], 5000)
-      throw new Error(`${svc} is ${h}: ${(logs.stderr || logs.stdout).trim().split('\n').pop() ?? ''}`)
+      const logs = await run(['logs', '--tail', '20', svc], 5000)
+      throw new Error(`${svc} is ${h}: ${startupRefusal(logs.stdout + '\n' + logs.stderr)}`)
     }
     await new Promise((r) => setTimeout(r, 1000))
   }
   throw new Error(`${svc} did not become healthy within a minute`)
+}
+
+/**
+ * Why the daemon wouldn't start, from its logs: its own "refusing to start"
+ * line when there is one (e.g. a removed vault still holds objects), else the
+ * last line.
+ */
+export function startupRefusal(logs: string): string {
+  const lines = logs.split('\n').map((l) => l.trim()).filter(Boolean)
+  const refusal = [...lines].reverse().find((l) => l.includes('refusing to start'))
+  const line = refusal ?? lines.pop() ?? ''
+  const vault = line.match(/belongs to vault "([a-z0-9_-]+)", which is not in the config/)
+  if (vault) {
+    return `the ${vault[1]} vault still holds objects, and the daemon won't start without it. Keep the vault until they are deleted or expire.`
+  }
+  return line
 }
 
 /** Stop and remove the sidecar container. Its volumes (the vault) stay. */
@@ -144,10 +208,11 @@ export async function removeSidecar(agentName: string): Promise<void> {
 
 /**
  * Mint a consumer credential for the agent's bridge plugin. The daemon prints
- * the token once, to stdout, and keeps only its hash.
+ * the token once, to stdout, and keeps only its hash. No --vault: it covers
+ * every vault, so adding a vault later needs no new credential.
  */
 export async function issueCredential(agentName: string): Promise<{ id: string; token: string }> {
-  const r = await run(['exec', ovenmittServiceName(agentName), 'ovenmitt', 'credential', 'issue', '--name', 'hermes-bridge', '--vault', VAULT], 30000)
+  const r = await run(['exec', ovenmittServiceName(agentName), 'ovenmitt', 'credential', 'issue', '--name', 'hermes-bridge'], 30000)
   const token = r.stdout.trim()
   const m = token.match(/^ovm_([0-9a-z]+)_[A-Za-z0-9_-]+$/)
   if (r.code !== 0 || !m) throw new Error(`credential issue failed: ${r.stderr.trim().split('\n').pop() ?? 'no token'}`)

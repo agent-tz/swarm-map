@@ -6,24 +6,31 @@ Words: an **ovenmitt vault** holds protected outputs. The **key store** (the Key
 
 ## Turning it on
 
-Harness → Settings → **Protected outputs**. Or the API:
+Harness → Settings → **Protected Outputs (oven-mitt)**. Or the API:
 
 ```
-PUT /api/harnesses/<id>/protected-outputs   { "enabled": true, "destinations": ["signal"] }
+PUT /api/harnesses/<id>/protected-outputs   { "enabled": true }
+PUT /api/harnesses/<id>/protected-outputs   { "vaults": [{ "name": "papareo", "ttl": "30d",
+    "destinations": [{ "platform": "signal", "match": "signal/*" }],
+    "location": { "hostPath": "/Users/me/transcripts", "overwrite": false } }] }
 GET /api/harnesses/<id>/protected-outputs   # status; ?audit=refresh runs the audit check now
 ```
 
 Enabling:
 
-1. writes the daemon config to `<DATA_DIR>/compose/<name>/ovenmitt/ovenmitt.toml`: one vault, `private`, with a 30-day TTL and filenames hidden from the agent, plus one `send` destination per ticked platform (`match = "<platform>/*"`);
+1. writes the daemon config to `<DATA_DIR>/compose/<name>/ovenmitt/ovenmitt.toml`: the configured vaults (none by default), each with filenames hidden from the agent, one `send` destination per ticked platform with its match, and an `fs` destination named `folder` when it has an export folder;
 2. adds an `ovenmitt-<name>` service to the agent's compose and starts it. The service has no network, a read-only filesystem and no capabilities;
-3. issues the agent's consumer credential. Swarm Map keeps it encrypted in `<DATA_DIR>/ovenmitt-credentials.json` (0600), never on the harness record, and no API returns it;
+3. issues the agent's consumer credential, covering every vault so adding one needs no new credential. Swarm Map keeps it encrypted in `<DATA_DIR>/ovenmitt-credentials.json` (0600), never on the harness record, and no API returns it;
 4. renders `OVENMITT_SOCKET` and `OVENMITT_CONSUMER_CREDENTIAL` into the hermes service's compose `environment:`, then recreates the agent;
 5. installs the `protected-outputs` pack: the `ovenmitt_bridge` plugin and the `ovenmitt` skill, from pinned tags.
 
 Any failure in steps 1–4 puts the compose, config and harness record back as they were. A failed pack install is reported but doesn't undo the rest. Install it later, or by hand: copy the plugin to `plugins/ovenmitt_bridge/` and the skill to `skills/ovenmitt/`, and add `ovenmitt_bridge` to `plugins.enabled`.
 
-**Destinations default to none:** every send is refused, and audited, until you tick a platform. Changing destinations or the TTL only restarts the daemon; the agent keeps running. Which platforms are suitable for which outputs is your decision (see [platforms](../platforms.md#protected-outputs-destinations)).
+**No vault by default.** Add vaults on the card, or let a feature add the one it needs (Transcription adds `papareo`). Agents set up before vaults were configurable keep their single vault, as `private`, and their credential is re-issued on the next change so it covers every vault.
+
+**Each vault's destinations default to none:** every send is refused, and audited, until you tick a platform. The match next to each platform decides which of its chats qualify: `<platform>/*` is every chat, or name one chat exactly (`signal/+6421…`). It must start with `<platform>/`, because that is the target the bridge declares. Changing vaults only restarts the daemon; the agent keeps running.
+
+**Export folder.** A vault may also allow exports to a folder on this machine (an ovenmitt `fs` destination, named `folder`). The folder must exist; it is bind-mounted into the daemon only, at `/var/lib/ovenmitt/exports/<vault>`, never into the agent, and exported files are plain text there. The daemon's user must be able to write to it. The bridge has no export tool, so only a plugin that exports itself (such as papareo-transcribe) writes there. Which platforms are suitable for which outputs is your decision (see [platforms](../platforms.md#protected-outputs-destinations)).
 
 Only a compose Swarm Map wrote (`<DATA_DIR>/compose/<name>/docker-compose.yml`) can be changed. Both lineages work, standalone and deploy-born (read_only/tmpfs), because every edit is surgical. A compose from anywhere else is refused: add the service, the socket volume and the environment entries by hand, following what Swarm Map would write.
 
@@ -64,9 +71,10 @@ Needs Protected outputs. Turning it on (card, or `PUT /api/harnesses/<id>/transc
 - sets `stt.enabled: false`, so voice notes reach the agent as recordings to transcribe. **Nobody can talk to this agent by voice**; that is the cost of the design;
 - sets `stt.local.model: large-v3-turbo`, the model the transcription plugin runs;
 - raises the memory limit to 3G unless it is already higher;
+- adds a `papareo` vault to Protected outputs if there is none, with no chats ticked. Tick the chats that may receive transcripts on the Protected Outputs card; until then the plugin keeps to local transcripts. The vault can't be removed while Transcription is on;
 - installs the `papareo-transcription` pack and recreates the agent.
 
-Turning it off puts back what it replaced. The Papa Reo key is a sealed key: assign it on the Keys page.
+Turning it off puts back what it replaced, and leaves the `papareo` vault and its transcripts in place. The Papa Reo key is a sealed key: assign it on the Keys page.
 
 ## Hard, not impossible
 

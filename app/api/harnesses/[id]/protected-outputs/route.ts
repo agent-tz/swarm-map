@@ -5,8 +5,9 @@ import { protectedOutputsStatus, refreshAudit, setProtectedOutputs } from '@/lib
 /**
  * GET /api/harnesses/:id/protected-outputs
  *
- * Status only: enabled, destinations (platforms whose chats may receive
- * protected files), TTL, the agent's live surfaces, whether a consumer
+ * Status only: enabled, the vaults (each with the chats that may receive its
+ * outputs, their match patterns and an optional export folder), the vaults
+ * another feature needs, the agent's live surfaces, whether a consumer
  * credential is issued (never the credential), daemon health, whether the
  * bridge plugin is installed, and the last audit check (the 6-hourly timer's,
  * or a fresh one with ?audit=refresh).
@@ -29,19 +30,21 @@ export async function GET(
 /**
  * PUT /api/harnesses/:id/protected-outputs
  *
- * Body: `{ enabled?: boolean, destinations?: string[], ttl?: string }`.
- * Enabling adds the ovenmitt sidecar, issues the consumer credential, wires
- * both into the agent's compose and recreates the agent; a failure puts
- * everything back. Changing destinations or TTL on an enabled agent only
- * restarts the daemon. Destinations default to none: every send is refused
- * (and audited) until a platform is ticked.
+ * Body: `{ enabled?: boolean, vaults?: OvenmittVault[] }`, where a vault is
+ * `{ name, ttl, destinations: [{ platform, match }], location?: { hostPath,
+ * overwrite } }` and `vaults` replaces the whole list. Enabling adds the
+ * ovenmitt sidecar, issues the consumer credential, wires both into the
+ * agent's compose and recreates the agent; a failure puts everything back.
+ * Changing vaults on an enabled agent only restarts the daemon. There are no
+ * vaults by default, and a vault's destinations default to none: every send
+ * is refused (and audited) until a platform is ticked.
  */
 export async function PUT(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params
-  let body: { enabled?: unknown; destinations?: unknown; ttl?: unknown }
+  let body: { enabled?: unknown; vaults?: unknown }
   try {
     body = await request.json()
   } catch {

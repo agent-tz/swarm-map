@@ -67,6 +67,16 @@ describe.each(Object.entries(lineages))('applyOvenmitt on %s', (_label, make) =>
     expect(removeOvenmitt(base, NAME)).toBe(base)
   })
 
+  it('mounts export folders into the daemon only, and drops them when removed', () => {
+    const base = make()
+    const out = applyOvenmitt(base, NAME, { ...OPTS, locations: [{ vault: 'papareo', hostPath: '/Users/me/transcripts' }] })
+    expect(service(out, 'ovenmitt-scout')).toContain('      - /Users/me/transcripts:/var/lib/ovenmitt/exports/papareo')
+    expect(service(out, 'hermes-scout').join('\n')).not.toContain('/Users/me/transcripts')
+    expect(applyOvenmitt(out, NAME, OPTS)).toBe(applyOvenmitt(base, NAME, OPTS))
+    expect(removeOvenmitt(out, NAME)).toBe(base)
+    expect(() => applyOvenmitt(base, NAME, { ...OPTS, locations: [{ vault: 'p', hostPath: '/a:/b' }] })).toThrow()
+  })
+
   it('refreshes the image in place', () => {
     const once = applyOvenmitt(make(), NAME, OPTS)
     const again = applyOvenmitt(once, NAME, { ...OPTS, image: 'ovenmitt:v2' })
