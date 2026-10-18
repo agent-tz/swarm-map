@@ -42,7 +42,7 @@
     },
     {
       "name": "papareo_transcribe",
-      "source": "git:utunga/papareo-transcribe#v0.2.6:hermes-plugin",
+      "source": "git:utunga/papareo-transcribe#v0.2.7:hermes-plugin",
       "note": "FIXME: move this to cyborg-garden/papareo-transcribe when that repo exists",
       "enabled": true,
       "tier": "pack",
@@ -79,7 +79,7 @@
     },
     {
       "name": "papareo-transcribe",
-      "source": "git:utunga/papareo-transcribe#v0.2.6:hermes-skill",
+      "source": "git:utunga/papareo-transcribe#v0.2.7:hermes-skill",
       "note": "FIXME: change this to cyborg-garden/papareo-transcribe when that repo exists",
       "tier": "pack",
       "pack": "papareo-transcription"
