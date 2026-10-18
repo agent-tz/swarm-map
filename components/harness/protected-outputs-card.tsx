@@ -1,7 +1,7 @@
 // components/harness/protected-outputs-card.tsx
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { AudioLines, Loader2, Plus, ShieldCheck, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { SURFACES, isSurfaceSlug } from '@/lib/surfaces/registry'
-import type { ProtectedOutputsStatus } from '@/lib/services/protected-outputs'
+import type { PluginVersion, ProtectedOutputsStatus } from '@/lib/services/protected-outputs'
 import type { TranscriptionStatus } from '@/lib/services/transcription'
 import type { OvenmittVault } from '@/lib/types'
 
@@ -18,6 +18,14 @@ type Props = { harnessId: string }
 // Platforms whose suitability as a destination for licensed outputs is not
 // settled. Ticking one is allowed, but the operator is told why it is doubtful.
 const CAUTION: Record<string, string> = {}
+
+/** "installed, v0.2.1", plus Swarm Map's pin when it differs or isn't known to match. */
+function pluginLine(installed: boolean, v: PluginVersion): string {
+  if (!installed) return v.pinned ? `not installed (Swarm Map pins ${v.pinned})` : 'not installed'
+  if (!v.installed) return v.pinned ? `installed, tag not recorded (Swarm Map pins ${v.pinned})` : 'installed'
+  if (v.pinned && v.pinned !== v.installed) return `installed, ${v.installed} (Swarm Map pins ${v.pinned}: update needed)`
+  return `installed, ${v.installed}`
+}
 
 function label(slug: string): string {
   return isSurfaceSlug(slug) ? SURFACES[slug].label : slug
@@ -164,7 +172,7 @@ export function ProtectedOutputsCard({ harnessId }: Props) {
             <dt className="text-muted-foreground">Credential</dt>
             <dd>{status.credentialIssued ? `issued (${status.credentialId ?? '?'})` : 'not issued'}</dd>
             <dt className="text-muted-foreground">Bridge plugin</dt>
-            <dd>{status.pluginInstalled ? 'installed' : 'not installed'}</dd>
+            <dd>{pluginLine(status.pluginInstalled, status.pluginVersion)}</dd>
             <dt className="text-muted-foreground">Audit (last 6h)</dt>
             <dd>
               {status.audit === null
@@ -342,6 +350,7 @@ function VaultSection({ vault, liveSurfaces, required, busy, onSave, onRemove }:
 export function TranscriptionCard({ harnessId }: Props) {
   const [status, setStatus] = useState<TranscriptionStatus | null>(null)
   const [busy, setBusy] = useState(false)
+  const [declaring, setDeclaring] = useState(false)
 
   const load = useCallback(() => {
     fetch(`/api/harnesses/${harnessId}/transcription`)
@@ -365,6 +374,18 @@ export function TranscriptionCard({ harnessId }: Props) {
     announceChange()
   }
 
+  async function saveKaitiakitanga(on: boolean, confirm?: string): Promise<boolean> {
+    setBusy(true)
+    const { ok, data } = await put(`/api/harnesses/${harnessId}/transcription`, { kaitiakitanga: on, confirm })
+    setBusy(false)
+    if (!ok) toast.error(data.error || 'Failed to save')
+    else toast.success(on ? 'Declared — the agent is restarting.' : 'Withdrawn — the agent is restarting.')
+    announceChange()
+    return ok
+  }
+
+  const k = status.kaitiakitanga
+
   return (
     <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 space-y-3">
       <div className="flex items-center gap-2">
@@ -379,9 +400,9 @@ export function TranscriptionCard({ harnessId }: Props) {
         />
       </div>
       <p className="text-xs text-muted-foreground">
-        Recordings people send get a transcript back as a file. English is transcribed locally; recordings that may
-        contain te reo Māori go to Papa Reo, and the transcript goes to the papareo vault without the model
-        reading it.
+        Recordings people send get a transcript back as a file. The agent asks first: a local transcript (whisper,
+        free), or Papa Reo for te reo Māori, whose transcript goes to the papareo vault without the model reading it.
+        Switching this off and on also updates the plugin to the tag Swarm Map pins.
       </p>
       {!status.protectedOutputs && <p className="text-xs text-[var(--warning)]">Turn on Protected Outputs first.</p>}
       {status.enabled && !status.vault && (
@@ -404,7 +425,7 @@ export function TranscriptionCard({ harnessId }: Props) {
           )}
         </dd>
         <dt className="text-muted-foreground">Plugin</dt>
-        <dd>{status.pluginInstalled ? 'installed' : 'not installed'}</dd>
+        <dd>{pluginLine(status.pluginInstalled, status.pluginVersion)}</dd>
         <dt className="text-muted-foreground">Memory limit</dt>
         <dd>{status.memory ?? 'unknown'}</dd>
       </dl>
@@ -413,6 +434,152 @@ export function TranscriptionCard({ harnessId }: Props) {
           Voice input is off on this agent: voice notes are treated as recordings to transcribe, not messages.
         </p>
       )}
+      {status.enabled && (
+        <div className="space-y-1 border-t border-[var(--border)] pt-3">
+          <label className="flex items-start gap-2 text-sm cursor-pointer">
+            <input
+              type="checkbox"
+              className="mt-0.5 accent-[var(--accent)]"
+              checked={k.compliant}
+              disabled={busy}
+              onChange={(e) => (e.target.checked ? setDeclaring(true) : saveKaitiakitanga(false))}
+            />
+            <span>
+              This agent is compliant with the{' '}
+              <a className="underline" href="https://papareo.io/kaitiakitanga" target="_blank" rel="noreferrer">
+                Kaitiakitanga License
+              </a>
+              <span className="block text-xs text-muted-foreground">
+                Lets the agent read Papa Reo transcripts, and says so in its SOUL.md. Only for an agent whose models
+                don&apos;t keep or learn from what they read.
+              </span>
+            </span>
+          </label>
+          {k.compliant && !k.declared && (
+            <p className="text-xs text-[var(--warning)]">
+              The declaration is missing from SOUL.md (edited away?). Untick and tick again to put it back.
+            </p>
+          )}
+          {!k.compliant && k.remote.length > 0 && (
+            <p className="text-xs text-[var(--warning)]">
+              This agent sends model calls to remote hosts, so it is probably not compliant.
+            </p>
+          )}
+        </div>
+      )}
+      <KaitiakitangaDialog
+        open={declaring}
+        status={k}
+        busy={busy}
+        onClose={() => setDeclaring(false)}
+        onConfirm={async (confirm) => {
+          if (await saveKaitiakitanga(true, confirm)) setDeclaring(false)
+        }}
+      />
     </div>
+  )
+}
+
+const CONFIRM_PHRASE = 'I CONFIRM'
+
+/**
+ * Confirm before declaring an agent Kaitiakitanga-compliant, always. When
+ * any configured model host is remote, the warning is loud and the operator
+ * must type I CONFIRM (the server checks it too).
+ */
+function KaitiakitangaDialog({
+  open,
+  status,
+  busy,
+  onClose,
+  onConfirm,
+}: {
+  open: boolean
+  status: TranscriptionStatus['kaitiakitanga']
+  busy: boolean
+  onClose: () => void
+  onConfirm: (confirm?: string) => void
+}) {
+  const ref = useRef<HTMLDialogElement>(null)
+  const [typed, setTyped] = useState('')
+  useEffect(() => {
+    if (open) ref.current?.showModal()
+    else ref.current?.close()
+  }, [open])
+  const remote = status.remote.length > 0
+  const ready = !remote || typed.trim() === CONFIRM_PHRASE
+
+  return (
+    <dialog
+      ref={ref}
+      onClose={() => {
+        setTyped('')
+        onClose()
+      }}
+      className="backdrop:bg-black/50 rounded-xl border border-[var(--border)] bg-[var(--background)] p-6 w-full max-w-md shadow-xl space-y-3"
+    >
+      <h3 className="font-medium">Declare this agent Kaitiakitanga-compliant?</h3>
+      <p className="text-sm text-muted-foreground">
+        The{' '}
+        <a className="underline" href="https://papareo.io/kaitiakitanga" target="_blank" rel="noreferrer">
+          Kaitiakitanga License
+        </a>{' '}
+        forbids sending Papa Reo transcripts to services that may collect or use them. Once declared, this agent can
+        read them, so every model it uses must be one that doesn&apos;t keep or learn from what it reads.
+      </p>
+      <div className="text-xs space-y-1">
+        <p className="text-muted-foreground">Where this agent&apos;s model calls go:</p>
+        <ul className="space-y-0.5">
+          {status.hosts.map((h) => (
+            <li key={h.role} className={h.local ? '' : 'text-[var(--danger)] font-medium'}>
+              {h.local ? '✓' : '✗'} {h.role}: <span className="font-mono">{h.baseUrl ?? h.provider ?? 'unknown'}</span>{' '}
+              <span className="text-muted-foreground">({h.why})</span>
+            </li>
+          ))}
+        </ul>
+        {status.hostedKeys.length > 0 && (
+          <p className="text-[var(--warning)]">
+            Keys for hosted providers are in this agent&apos;s .env ({status.hostedKeys.join(', ')}); a task left on
+            &quot;auto&quot; might use one.
+          </p>
+        )}
+        <p className="text-muted-foreground">
+          This only reads the agent&apos;s config. A tool that calls a model on its own won&apos;t show here.
+        </p>
+      </div>
+      {remote && (
+        <div className="rounded-md border border-destructive bg-destructive/10 p-3 space-y-2">
+          <p className="text-sm font-medium text-[var(--danger)]">
+            This agent sends model calls to remote hosts. Declaring it compliant would very likely break the licence:
+            Papa Reo transcripts would be sent to {status.remote.length === 1 ? 'that host' : 'those hosts'}.
+          </p>
+          <p className="text-xs">
+            Type <span className="font-mono">{CONFIRM_PHRASE}</span> only if you know they don&apos;t keep or learn from
+            what they read.
+          </p>
+          <Input
+            className="h-8 font-mono"
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            placeholder={CONFIRM_PHRASE}
+            aria-label="Type I CONFIRM"
+          />
+        </div>
+      )}
+      <div className="flex justify-end gap-2">
+        <Button type="button" variant="outline" size="sm" onClick={onClose} disabled={busy}>
+          Cancel
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={remote ? 'destructive' : 'default'}
+          disabled={busy || !ready}
+          onClick={() => onConfirm(remote ? CONFIRM_PHRASE : undefined)}
+        >
+          {busy && <Loader2 className="animate-spin" />} Declare compliant
+        </Button>
+      </div>
+    </dialog>
   )
 }

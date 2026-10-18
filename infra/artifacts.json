@@ -38,12 +38,12 @@
       "enabled": true,
       "tier": "pack",
       "pack": "protected-outputs",
-      "note": "FIXME: move this utunga/ source to cyborg-garden/oven-mitt as soon as that is fixed"
+      "note": "FIXME: move this cyborg-garden/oven-mitt as soon as that is available"
     },
     {
       "name": "papareo_transcribe",
-      "source": "git:utunga/papareo-transcribe#v0.2.0:hermes-plugin",
-      "note": "FIXME: move this utunga/ source to cyborg-garden/papareo-transcribe when that repo exists",
+      "source": "git:utunga/papareo-transcribe#v0.2.4:hermes-plugin",
+      "note": "FIXME: move this to cyborg-garden/papareo-transcribe when that repo exists",
       "enabled": true,
       "tier": "pack",
       "pack": "papareo-transcription"
@@ -75,12 +75,12 @@
       "source": "git:utunga/oven-mitt#v0.2.0:hermes-plugin/skill",
       "tier": "pack",
       "pack": "protected-outputs",
-      "note": "FIXME: move this utunga/ source to cyborg-garden/oven-mitt as soon as that is fixed"
+      "note": "FIXME: change this to cyborg-garden/oven-mitt as soon as that repo exists"
     },
     {
       "name": "papareo-transcribe",
-      "source": "git:utunga/papareo-transcribe#v0.2.0:hermes-skill",
-      "note": "FIXME: move this utunga/ source to cyborg-garden/papareo-transcribe when that repo exists",
+      "source": "git:utunga/papareo-transcribe#v0.2.4:hermes-skill",
+      "note": "FIXME: change this to cyborg-garden/papareo-transcribe when that repo exists",
       "tier": "pack",
       "pack": "papareo-transcription"
     }

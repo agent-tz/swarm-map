@@ -132,6 +132,10 @@ export type OvenmittVault = {
 export type TranscriptionSettings = {
   enabled: boolean
   prior?: { sttEnabled: string | null; sttModel: string | null; memory: string | null }
+  // The operator declared this agent compliant with the Kaitiakitanga
+  // License: the agent may read Papa Reo transcripts (the plugin returns the
+  // text), and its SOUL.md says so. Who and when are in the audit log.
+  kaitiakitanga?: { compliant: boolean; at?: string; remoteHosts?: string[] }
 }
 
 /** Global policy for the model-update scheduler (Settings.modelAutoUpdate). */

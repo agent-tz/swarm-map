@@ -31,7 +31,7 @@ import { services } from '@/lib/services'
 import { SEALED_PROVIDER_VARS } from '@/lib/key-providers'
 import { SURFACES, SURFACE_SLUGS } from '@/lib/surfaces/registry'
 import type { Harness, OvenmittSettings, OvenmittVault } from '@/lib/types'
-import { installArtifacts } from './artifacts-manifest'
+import { installArtifacts, installedRef, parseGitSource } from './artifacts-manifest'
 import { ensurePluginsEnabled } from './artifacts-sync'
 import { loadBasePackage, readStamp, STAMP_FILE, validateSelection } from './base-package'
 import { Encryption } from './encryption'
@@ -81,7 +81,27 @@ export type ProtectedOutputsStatus = {
   // Swarm Map wrote this agent's compose; nothing can be enabled otherwise.
   composeManaged: boolean
   pluginInstalled: boolean
+  pluginVersion: PluginVersion
   audit: AuditSummary | null
+}
+
+/**
+ * Which tag a pack's plugin runs, and which tag this Swarm Map pins it to
+ * (infra/artifacts.json). installed is null when the plugin is missing or
+ * was installed before Swarm Map recorded tags (or by hand).
+ */
+export type PluginVersion = { installed: string | null; pinned: string | null }
+
+export function pluginVersion(agentName: string, plugin: string): PluginVersion {
+  const dir = path.join(agentDataDirForName(agentName), 'plugins', plugin)
+  let pinned: string | null = null
+  try {
+    const entry = loadBasePackage(process.cwd()).manifest.plugins.find((p) => p.name === plugin)
+    pinned = entry ? (parseGitSource(entry.source)?.ref ?? null) : null
+  } catch {
+    pinned = null
+  }
+  return { installed: fs.existsSync(dir) ? installedRef(dir) : null, pinned }
 }
 
 /**
@@ -179,6 +199,10 @@ export function managedEnvFor(harness: Harness): Record<string, string | null> {
   const credential = on ? storedCredential(harness.id) : null
   out.OVENMITT_SOCKET = on && credential ? OVENMITT_SOCKET : null
   out.OVENMITT_CONSUMER_CREDENTIAL = credential
+  // Not a secret: the operator's Kaitiakitanga declaration, read by the
+  // papareo_transcribe plugin. Only while Transcription is on.
+  out.PAPAREO_KAITIAKITANGA_COMPLIANT =
+    harness.transcription?.enabled === true && harness.transcription.kaitiakitanga?.compliant === true ? '1' : null
   return out
 }
 
@@ -226,9 +250,11 @@ export function liveSurfaces(agentName: string): string[] {
  * Install one pack's artifacts into an existing agent, including git-sourced
  * ones (fetched at their pinned tag and trust-gated), enable its plugins and
  * record the pack in the agent's stamp so drift checks and forbiddenPacks see
- * it. Never throws: the result says what happened.
+ * it. Never throws: the result says what happened. With overwrite, artifacts
+ * already there are replaced by the pinned version (fetched and trust-gated
+ * before the old copy is removed, so a failed update keeps the old one).
  */
-export async function installPack(harness: Harness, pack: string): Promise<PackResult> {
+export async function installPack(harness: Harness, pack: string, opts: { overwrite?: boolean } = {}): Promise<PackResult> {
   try {
     const agentDir = agentDataDirForName(harness.name)
     const repoRoot = process.cwd()
@@ -242,6 +268,7 @@ export async function installPack(harness: Harness, pack: string): Promise<PackR
       hooks: pkg.manifest.hooks.filter((e) => e.pack === pack),
     }
     const results = await installArtifacts(agentDir, entries, repoRoot, {
+      overwrite: opts.overwrite === true,
       gitToken: process.env.ARTIFACT_GIT_TOKEN || process.env.GITHUB_TOKEN || undefined,
     })
     const failed = results.filter((r) => !r.installed)
@@ -264,6 +291,18 @@ export async function installPack(harness: Harness, pack: string): Promise<PackR
   } catch (err) {
     return { pack, installed: false, error: err instanceof Error ? err.message : String(err) }
   }
+}
+
+/**
+ * Whether turning a feature on should (re)install its pack: the plugin is
+ * missing, or isn't recorded as the tag this Swarm Map pins (older, newer,
+ * hand-copied, or installed before tags were recorded).
+ */
+export function packNeedsInstall(agentName: string, plugin: string): { install: boolean; overwrite: boolean } {
+  if (!pluginInstalled(agentName, plugin)) return { install: true, overwrite: false }
+  const v = pluginVersion(agentName, plugin)
+  const stale = v.pinned !== null && v.installed !== v.pinned
+  return { install: stale, overwrite: stale }
 }
 
 export function pluginInstalled(agentName: string, plugin: string): boolean {
@@ -301,6 +340,7 @@ export async function protectedOutputsStatus(harnessId: string): Promise<Protect
     daemon: s?.enabled ? await daemonHealth(h.name) : 'absent',
     composeManaged: fs.existsSync(swarmMapComposePath(dataDir(), h.name)),
     pluginInstalled: pluginInstalled(h.name, BRIDGE_PLUGIN),
+    pluginVersion: pluginVersion(h.name, BRIDGE_PLUGIN),
     audit: cachedAudit(h.id),
   }
 }
@@ -361,7 +401,14 @@ export async function setProtectedOutputs(
     }
     // The plugin first: enable() renders the credential only once the plugin
     // that pops it is installed and enabled.
-    const pack = pluginInstalled(h.name, BRIDGE_PLUGIN) ? undefined : await installPack(h, PROTECTED_OUTPUTS_PACK)
+    // On the off→on switch, a stale plugin is updated to the pinned tag too;
+    // other saves only install a missing one.
+    const turningOn = h.ovenmitt?.enabled !== true
+    const need = packNeedsInstall(h.name, BRIDGE_PLUGIN)
+    const pack =
+      need.install && (turningOn || !need.overwrite)
+        ? await installPack(h, PROTECTED_OUTPUTS_PACK, { overwrite: need.overwrite })
+        : undefined
     const restarted = await enable(h, file, vaults)
     if (pack?.installed && !restarted) services.harness.restart(harnessId, 'recreate')
     return { ok: true, status: (await protectedOutputsStatus(harnessId))!, restarted: restarted || pack?.installed === true, ...(pack ? { pack } : {}) }

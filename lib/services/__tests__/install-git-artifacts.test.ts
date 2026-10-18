@@ -3,7 +3,7 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { execFileSync } from 'child_process'
-import { installArtifacts, type GitSource } from '../artifacts-manifest'
+import { installArtifacts, installedRef, SOURCE_MARKER, type GitSource } from '../artifacts-manifest'
 import { fetchGitArtifact } from '../git-fetch'
 
 let tmp: string
@@ -33,6 +33,18 @@ describe('installArtifacts with git sources', () => {
     })
     expect(results.find((r) => r.name === 'demo')!.installed).toBe(true)
     expect(fs.existsSync(path.join(agentDir, 'skills', 'demo', 'SKILL.md'))).toBe(true)
+  })
+
+  it('records the source it installed from, so the UI can show the tag', async () => {
+    const fetched = prepFetched('---\nname: x\n---\nSearch the web for domains.')
+    const agentDir = path.join(tmp, 'agent-tag')
+    const source = 'git:org/repo#v0.2.2:hermes-skill'
+    const manifest = { plugins: [], skills: [{ name: 'demo', source }], hooks: [] }
+    await installArtifacts(agentDir, manifest, tmp, { gitFetch: (_src: GitSource) => fetched })
+    const dir = path.join(agentDir, 'skills', 'demo')
+    expect(fs.readFileSync(path.join(dir, SOURCE_MARKER), 'utf-8').trim()).toBe(source)
+    expect(installedRef(dir)).toBe('v0.2.2')
+    expect(installedRef(path.join(tmp, 'nowhere'))).toBeNull()
   })
 
   it('refuses (throws) a git-sourced skill carrying injection and does not install it', async () => {

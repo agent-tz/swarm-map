@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { setTranscription, transcriptionStatus } from '@/lib/services/transcription'
+import { setKaitiakitanga, setTranscription, transcriptionStatus } from '@/lib/services/transcription'
 
 /**
  * GET /api/harnesses/:id/transcription
@@ -25,17 +25,27 @@ export async function GET(
  * reach the agent as recordings), sets the local whisper model, raises
  * memory to 3G unless it is already higher, installs the transcription pack
  * and recreates the agent. Disabling puts back what enabling replaced.
+ *
+ * Or `{ kaitiakitanga: boolean, confirm?: string }`: declare (or withdraw)
+ * that the agent is deployed in line with the Kaitiakitanga License, which
+ * lets it read Papa Reo transcripts. If any configured model host is remote,
+ * declaring needs `confirm: "I CONFIRM"`.
  */
 export async function PUT(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params
-  let body: { enabled?: unknown }
+  let body: { enabled?: unknown; kaitiakitanga?: unknown; confirm?: unknown }
   try {
     body = await request.json()
   } catch {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
+  }
+  if (body && body.kaitiakitanga !== undefined) {
+    const k = await setKaitiakitanga(id, body)
+    if (!k.ok) return NextResponse.json({ error: k.error }, { status: k.status })
+    return NextResponse.json({ success: true, restarted: k.restarted, status: k.status })
   }
   const r = await setTranscription(id, body ?? {})
   if (!r.ok) return NextResponse.json({ error: r.error }, { status: r.status })

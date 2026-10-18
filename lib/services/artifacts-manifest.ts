@@ -154,6 +154,24 @@ export interface InstallOpts {
   overwrite?: boolean
 }
 
+/**
+ * File written into a git-sourced artifact's directory on install, holding
+ * the exact source it came from (`git:<org>/<repo>#<tag>[:<subdir>]`), so
+ * the UI can say which tag an agent runs. Git-sourced artifacts aren't in
+ * the sync lock, so nothing hashes it.
+ */
+export const SOURCE_MARKER = '.swarm-map-source'
+
+/** The tag an installed git-sourced artifact came from, or null if unrecorded. */
+export function installedRef(artifactDir: string): string | null {
+  try {
+    const src = fs.readFileSync(path.join(artifactDir, SOURCE_MARKER), 'utf-8').trim()
+    return parseGitSource(src)?.ref ?? null
+  } catch {
+    return null
+  }
+}
+
 // Sources supported:
 //   'local'                      copy infra/templates/<type>/<name>
 //   'git:<org>/<repo>#<tag>[:..]' fetch at the pinned tag, run the trust gate,
@@ -219,6 +237,7 @@ export async function installArtifacts(
             recursive: true,
             filter: (s) => !s.split(path.sep).includes('.git'),
           })
+          fs.writeFileSync(path.join(destDir, SOURCE_MARKER), entry.source + '\n')
           results.push({ type, name: entry.name, installed: true })
         } catch (e) {
           results.push({ type, name: entry.name, installed: false, error: `copy failed: ${(e as Error).message}` })
