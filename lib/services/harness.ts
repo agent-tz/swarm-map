@@ -1794,8 +1794,45 @@ export class HarnessService {
       extraMounts: _sourceExtraMounts,
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       extraEnv: _sourceExtraEnv,
+      // Handled below: Protected outputs and Transcription are cloned, off.
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      ovenmitt: _sourceOvenmitt,
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      transcription: _sourceTranscription,
       ...sourceWithoutHostAccess
     } = source
+
+    // Protected outputs and Transcription are cloned (vaults, chats, export
+    // folder; Transcription's saved prior settings) but switched OFF: the
+    // duplicate has none of their wiring yet (no vault sidecar, no
+    // credential). Turning them on for the duplicate creates its own vault
+    // volumes, so new vault keys, and issues its own consumer credential;
+    // nothing secret is shared with the source. The Kaitiakitanga
+    // declaration is never cloned: it is the operator's statement about one
+    // agent, so the duplicate starts not declared.
+    const { vaultsOf } = await import('./protected-outputs')
+    const clonedOvenmitt = source.ovenmitt ? { enabled: false, vaults: vaultsOf(source.ovenmitt) } : undefined
+    const clonedTranscription = source.transcription
+      ? {
+          enabled: false,
+          ...(source.transcription.prior ? { prior: source.transcription.prior } : {}),
+          ...(source.transcription.kaitiakitanga ? { kaitiakitanga: { compliant: false } } : {}),
+        }
+      : undefined
+    // The copied config.yaml still has the source's Transcription changes
+    // (voice input off, the whisper model); put back what it replaced, since
+    // Transcription is off on the duplicate.
+    let restoredMemory: string | undefined
+    if (source.transcription?.enabled && source.transcription.prior) {
+      const prior = source.transcription.prior
+      const cfg = path.join(newDataDir, 'config.yaml')
+      if (fs.existsSync(cfg)) {
+        const { spliceStt } = await import('./transcription')
+        const r = spliceStt(fs.readFileSync(cfg, 'utf-8'), { enabled: prior.sttEnabled, model: prior.sttModel })
+        if (r.ok) fs.writeFileSync(cfg, r.text, 'utf-8')
+      }
+      if (prior.memory) restoredMemory = prior.memory
+    }
     const duplicate: Partial<Harness> = {
       ...sourceWithoutHostAccess,
       id: newId,
@@ -1806,6 +1843,9 @@ export class HarnessService {
       serviceName: dupAdapter.serviceName(newName),
       parentId: sourceId,
       platform: undefined, // reset — no surfaces connected yet
+      ...(clonedOvenmitt ? { ovenmitt: clonedOvenmitt } : {}),
+      ...(clonedTranscription ? { transcription: clonedTranscription } : {}),
+      ...(restoredMemory ? { resources: { ...(sourceWithoutHostAccess.resources ?? {}), memory: restoredMemory } } : {}),
     }
 
     overlays.push(duplicate)

@@ -288,6 +288,48 @@ describe('HarnessService.duplicate — host access is not inherited', () => {
     expect(result!.extraMounts ?? []).toEqual([])
   })
 
+  it('clones Protected outputs and Transcription switched off, with no credential and no declaration', async () => {
+    storage.write('harnesses.json', [{
+      id: 'h_iris',
+      name: 'iris',
+      tier: 'team',
+      resources: { memory: '3G' },
+      ovenmitt: {
+        enabled: true,
+        vaults: [{ name: 'papareo', ttl: '30d', destinations: [{ platform: 'signal', match: 'signal/*' }] }],
+        credentialId: 'abc12345',
+        credentialScope: 'all',
+      },
+      transcription: {
+        enabled: true,
+        prior: { sttEnabled: 'true', sttModel: 'base', memory: '2G' },
+        kaitiakitanga: { compliant: true, at: '2026-10-18T00:00:00Z', remoteHosts: [] },
+      },
+    }])
+    const src = path.join(homeDir, '.hermes-iris')
+    fs.mkdirSync(src, { recursive: true })
+    fs.writeFileSync(path.join(src, 'config.yaml'), 'stt:\n  enabled: false\n  local:\n    model: large-v3-turbo\n')
+
+    const result = await service.duplicateOverlay('h_iris', 'iris-copy')
+    expect(result!.ovenmitt).toEqual({
+      enabled: false,
+      vaults: [{ name: 'papareo', ttl: '30d', destinations: [{ platform: 'signal', match: 'signal/*' }] }],
+    })
+    expect(result!.transcription).toEqual({
+      enabled: false,
+      prior: { sttEnabled: 'true', sttModel: 'base', memory: '2G' },
+      kaitiakitanga: { compliant: false },
+    })
+    expect(result!.resources?.memory).toBe('2G')
+    const cfg = fs.readFileSync(path.join(homeDir, '.hermes-iris-copy', 'config.yaml'), 'utf-8')
+    expect(cfg).toContain('enabled: true')
+    expect(cfg).toContain('model: base')
+
+    const onDisk = storage.read<Partial<Harness>[]>('harnesses.json', [])
+    expect(onDisk.find((h) => h.id === 'h_iris')!.transcription?.kaitiakitanga?.compliant).toBe(true)
+    expect(onDisk.find((h) => h.id === 'h_iris')!.ovenmitt?.credentialId).toBe('abc12345')
+  })
+
   it('still carries the non-host-access fields it always did', async () => {
     // Guard against over-stripping: only the two host-access fields go.
     const result = await service.duplicateOverlay('h_iris', 'iris-copy')
