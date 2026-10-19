@@ -63,7 +63,7 @@ New agents try `nousresearch/hermes-agent:latest` from Docker Hub first. If pull
 
 ### Sealed Keys and Protected Outputs
 
-A **sealed** provider's key (`SEALED_PROVIDERS` in `lib/key-providers.ts`, today `papareo`) never goes into an agent's `.env`, where the agent's terminal could `cat` it: `KeysService.writeKeyToEnv` renders it into the hermes service's compose `environment:` instead. **Protected outputs** adds a per-agent `ovenmitt-<name>` vault sidecar for outputs that must never enter an LLM context. Both edit the compose surgically, so both work on deploy-born composes, and the settings route re-applies them after any regeneration. "ovenmitt vault" (protected outputs) is not the key store (API keys). See `docs/runbooks/ovenmitt.md`.
+A **sealed** provider's key (`SEALED_PROVIDERS` in `lib/key-providers.ts`; today one public speech-to-text API, `papareo`) never goes into an agent's `.env`, where the agent's terminal could `cat` it: `KeysService.writeKeyToEnv` renders it into the hermes service's compose `environment:` instead. **Protected outputs** adds a per-agent `ovenmitt-<name>` vault sidecar for outputs that must never enter an LLM context. Both edit the compose surgically, so both work on deploy-born composes, and the settings route re-applies them after any regeneration. "ovenmitt vault" (protected outputs) is not the key store (API keys). See `docs/runbooks/ovenmitt.md`.
 
 ### Key Encryption
 
@@ -155,8 +155,8 @@ All business logic in `lib/services/`. API routes are thin wrappers.
 | Protected outputs | `protected-outputs.ts` | Per-agent ovenmitt vault: enable/disable, consumer credential (encrypted in its own file, never on the overlay), pack install, re-applying sidecar + sealed env after a regeneration |
 | ovenmitt | `ovenmitt.ts` | Daemon config rendering (`ovenmitt.toml`), sidecar start/health, credential issue/revoke, audit check (`docker exec ovenmitt-<name> …`) |
 | Compose surgery | `ovenmitt-compose.ts` | Idempotent line edits on any Swarm-Map-written compose (standalone and deploy-born): sidecar, managed `environment:` entries, memory limit |
-| Sealed keys | `sealed-env.ts` | Writes sealed values (e.g. `PAPAREO_API_KEY`) into the compose `environment:`, 0600, never `.env` |
-| Transcription | `transcription.ts` | Papa Reo escalation card: `stt.*` splice in config.yaml, memory floor, restore on disable |
+| Sealed keys | `sealed-env.ts` | Writes sealed provider keys into the compose `environment:`, 0600, never `.env` |
+| Transcription | `transcription.ts` | Transcription card (optional pack: local whisper, or a licensed speech-to-text API whose output goes through Protected outputs): `stt.*` splice in config.yaml, memory floor, restore on disable |
 
 ## Agentic Use (Claude Code, Hermes, etc.)
 
