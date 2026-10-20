@@ -1,0 +1,304 @@
+name: sanitization-gate
+
+# THE canonical sanitization gate (the Alembic gate), as a reusable workflow.
+#
+# Every public agent repo calls this instead of carrying its own copy of
+# scripts/check_sanitization.py. The copies drifted: each one had quietly lost a
+# protection another still had. Now there is one script (scripts/ in this repo)
+# and each repo keeps only its own sanitize.config.json.
+#
+# HOW A REPO USES IT — pin to a tag, never @main:
+#
+#   jobs:
+#     sanitization:
+#       uses: cyborg-garden/swarm-map/.github/workflows/sanitization-gate.yml@sanitization-gate-v1.0.0
+#       with:
+#         mode: pr            # or full-tree (scheduled / release audits)
+#       secrets:
+#         OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+#
+# Private repos can call it: this repo is public. The script is fetched from the
+# same tag (inputs.gate_ref defaults to it), so the workflow and the script it
+# runs can never come from different releases.
+#
+# THREAT MODEL: this stops ACCIDENTAL leaks by trusted committers and their
+# agents. It is not a defence against a malicious committer who can edit
+# workflows; required checks, CODEOWNERS and review cover that.
+#
+# MAKE THE CHECK REQUIRED. A pin to a tag that does not exist (a typo, or a
+# consumer merged before the gate's release was tagged) makes the CALLER job
+# fail at 0s with no check reported on the PR, so the PR can look green while
+# nothing ran. Only a required status check turns that into a block. In each
+# consumer, require the check named "<caller job id> / sanitize" — e.g.
+# "sanitize / sanitize" for a caller job with id `sanitize` — on the default
+# branch (branch protection or a ruleset).
+#
+# RELEASING A NEW GATE VERSION: bump GATE_VERSION in scripts/check_sanitization.py
+# AND the gate_ref default below to the same sanitization-gate-vX.Y.Z, merge, tag
+# that commit, then bump each consumer's pin. The "version guard" step fails if
+# the two disagree.
+#
+# WHAT RUNS, in separate steps so a red check names its own cause:
+#   0. The gate's own self-tests. A scanner that cannot detect its own fixtures
+#      never gets to report a repo clean.
+#   1. Config check. A missing/invalid sanitize.config.json, or sensitive_prefixes
+#      that select nothing, fails here. Config can never switch layer 1 off,
+#      narrow it, or skip anything but test fixtures; allow entries are exact.
+#      On pull_request, steps 2-3 use the BASE commit's config, never the PR's.
+#   2. Secrets & PII (deterministic). No credential, no network. Runs on EVERY
+#      run, including fork PRs. Hard fail on any hit.
+#   3. Particulars (semantic). Needs OPENROUTER_API_KEY and runs with
+#      --require-semantic, so it FAILS CLOSED: a missing, malformed, revoked or
+#      rate-limited key, or an unreachable API, is a red step, never a warning.
+#
+# FORK PRs: GitHub gives `pull_request` runs from a fork no secrets, so step 3
+# cannot run. Those runs get steps 0-2 plus a loud annotation: green means "no
+# secrets found", NOT "no particulars found". A maintainer reviews particulars by
+# hand before merging. Running the semantic layer on forks would need
+# `pull_request_target`, which hands the key to a context where the PR's own code
+# must not be trusted — a deliberate maintainer decision, intentionally NOT made
+# here.
+#
+# SCOPE:
+#   mode: pr        → only files changed across the full PR range
+#                     (git diff BASE...HEAD, three-dot). Never flaky-blocks a
+#                     contributor on pre-existing content.
+#   mode: full-tree → every tracked file. The backstop for anything no PR touched
+#                     (renames, merges, out-of-band edits), and the only honest
+#                     audit of a release, because a release is a tree, not a diff.
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: "pr (diff-only, needs a pull_request event) or full-tree"
+        type: string
+        default: pr
+      gate_ref:
+        description: "Ref of cyborg-garden/swarm-map to take the gate script from. Leave the default: it matches the tag this workflow was called at."
+        type: string
+        default: sanitization-gate-v1.0.0
+      python_version:
+        type: string
+        default: "3.12"
+    secrets:
+      OPENROUTER_API_KEY:
+        description: "Semantic layer key. Absent on fork PRs by design; anywhere else its absence fails the run."
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  sanitize:
+    runs-on: ubuntu-latest
+    env:
+      GATE_HOME: cyborg-garden/swarm-map
+    steps:
+      - name: Check inputs
+        env:
+          MODE: ${{ inputs.mode }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          # pull_request_target checks out the BASE branch, so the PR diff is
+          # empty (a vacuous pass) while the secret is exposed to a run triggered
+          # by untrusted code. Refused outright, in every mode.
+          if [ "$EVENT" = "pull_request_target" ]; then
+            echo "::error::pull_request_target is refused: it scans the base branch, not the PR, and exposes OPENROUTER_API_KEY. Call this gate from a pull_request workflow."
+            exit 2
+          fi
+          case "$MODE" in
+            pr)
+              if [ "$EVENT" != "pull_request" ]; then
+                echo "::error::mode=pr needs a pull_request event (got '$EVENT'). Use mode: full-tree for push, schedule, tag and dispatch runs."
+                exit 2
+              fi ;;
+            full-tree) ;;
+            *) echo "::error::mode must be 'pr' or 'full-tree' (got '$MODE')"; exit 2 ;;
+          esac
+
+      - name: Check out the repository under review
+        uses: actions/checkout@v4
+        with:
+          # Full history so the three-dot PR-range diff has a merge-base.
+          fetch-depth: ${{ inputs.mode == 'full-tree' && 1 || 0 }}  # NB: 0 is falsy in expressions, so test for full-tree
+          persist-credentials: false
+
+      # In the gate's home repo, test and run the gate from the commit under
+      # review, so a PR that changes the gate is gated by its own change.
+      - name: Fetch the canonical gate
+        if: github.repository != 'cyborg-garden/swarm-map'
+        uses: actions/checkout@v4
+        with:
+          repository: cyborg-garden/swarm-map
+          ref: ${{ inputs.gate_ref }}
+          path: .sanitization-gate
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/check_sanitization.py
+            scripts/test_check_sanitization.py
+            sanitize.config.json
+            .github/workflows/sanitization-gate.yml
+          sparse-checkout-cone-mode: false
+
+      # dir   = the gate under TEST (self-tests, config check).
+      # judge = the gate that JUDGES this run. In the home repo on pull_request
+      # that is the BASE commit's script, so a PR cannot weaken the gate that
+      # judges it; its own script is still exercised by the self-tests.
+      - name: Locate the gate
+        id: gate
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.repository }}" = "$GATE_HOME" ]; then
+            echo "dir=$GITHUB_WORKSPACE/scripts" >> "$GITHUB_OUTPUT"
+            if [ "$EVENT" = "pull_request" ]; then
+              mkdir -p "$RUNNER_TEMP/base-gate"
+              git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null || { echo "::error::base commit $BASE_SHA is not in the checkout"; exit 2; }
+              git show "$BASE_SHA:scripts/check_sanitization.py" > "$RUNNER_TEMP/base-gate/check_sanitization.py"
+              echo "judge=$RUNNER_TEMP/base-gate" >> "$GITHUB_OUTPUT"
+              if ! git diff --quiet "$BASE_SHA" HEAD -- scripts/check_sanitization.py; then
+                msg="This PR changes the gate script. The diff was judged by the BASE commit's gate; the PR's script ran only under its self-tests. The new gate judges PRs after merge."
+                echo "::notice title=Gate change not used to judge this PR::$msg"
+                { echo "### Gate script changed"; echo "$msg"; } >> "$GITHUB_STEP_SUMMARY"
+              fi
+            else
+              echo "judge=$GITHUB_WORKSPACE/scripts" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            # Move the gate OUT of the workspace: the scanned repo's own pytest
+            # config / conftest must never touch the gate's self-tests, and the
+            # gate's fixtures must never be part of the scanned tree.
+            mv "$GITHUB_WORKSPACE/.sanitization-gate" "$RUNNER_TEMP/sanitization-gate"
+            echo "dir=$RUNNER_TEMP/sanitization-gate/scripts" >> "$GITHUB_OUTPUT"
+            echo "judge=$RUNNER_TEMP/sanitization-gate/scripts" >> "$GITHUB_OUTPUT"
+          fi
+
+      # gate_ref must be a release tag (whose name must match the script's
+      # GATE_VERSION) or a full 40-hex commit SHA. Branch names and short refs
+      # are refused: they move.
+      - name: Version guard (gate_ref must be a release tag or full SHA)
+        if: github.repository != 'cyborg-garden/swarm-map'
+        env:
+          GATE_REF: ${{ inputs.gate_ref }}
+          GATE_DIR: ${{ steps.gate.outputs.dir }}
+        run: |
+          set -euo pipefail
+          if printf '%s' "$GATE_REF" | grep -Eqx '[0-9a-f]{40}'; then
+            echo "gate pinned to commit $GATE_REF"
+            exit 0
+          fi
+          if ! printf '%s' "$GATE_REF" | grep -Eqx 'sanitization-gate-v[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "::error::gate_ref '$GATE_REF' is neither a sanitization-gate-vX.Y.Z tag nor a full 40-hex commit SHA."
+            exit 2
+          fi
+          v="$(python3 -c "import sys; sys.path.insert(0, '$GATE_DIR'); import check_sanitization as c; print(c.GATE_VERSION)")"
+          if [ "sanitization-gate-v$v" != "$GATE_REF" ]; then
+            echo "::error::gate_ref $GATE_REF carries GATE_VERSION $v. The tag and the script disagree; fix the release, do not override gate_ref."
+            exit 2
+          fi
+          echo "gate $GATE_REF (GATE_VERSION $v)"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version }}
+
+      - name: Install self-test deps
+        run: pip install pytest
+
+      - name: "0. Gate self-tests (no key needed)"
+        env:
+          GATE_DIR: ${{ steps.gate.outputs.dir }}
+          OPENROUTER_API_KEY: ""
+        working-directory: ${{ steps.gate.outputs.dir }}
+        run: python -m pytest test_check_sanitization.py -q -p no:cacheprovider
+
+      - name: "1. Config check (sanitize.config.json)"
+        env:
+          GATE_DIR: ${{ steps.gate.outputs.dir }}
+        run: python "$GATE_DIR/check_sanitization.py" --check-config
+
+      - name: Resolve scan scope
+        id: scope
+        env:
+          MODE: ${{ inputs.mode }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          if [ "$MODE" = "pr" ]; then
+            # No `git fetch` anywhere: the checkout keeps no credentials
+            # (persist-credentials: false), so a fetch fails in a private repo.
+            # fetch-depth 0 already brought every branch, including the base.
+            git rev-parse --verify --quiet "origin/${BASE_REF}^{commit}" >/dev/null \
+              || { echo "::error::origin/${BASE_REF} is not in the checkout"; exit 2; }
+            echo "args=--diff" >> "$GITHUB_OUTPUT"
+            echo "base=origin/${BASE_REF}" >> "$GITHUB_OUTPUT"
+            echo "changed files:"
+            git diff --name-only "origin/${BASE_REF}...HEAD"
+          else
+            echo "args=--all" >> "$GITHUB_OUTPUT"
+            echo "base=" >> "$GITHUB_OUTPUT"
+          fi
+
+      # A PR must never loosen the rules it is judged by. On pull_request the
+      # gate reads sanitize.config.json from the BASE commit; a config change in
+      # the PR takes effect only after merge. Notice, not failure: failing would
+      # block every legitimate config edit and push maintainers toward bypasses,
+      # while scanning with the base config already means a loosening cannot help
+      # the PR that introduces it. The change itself still needs human review.
+      - name: Resolve the trusted config
+        id: cfg
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "path=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null || { echo "::error::base commit $BASE_SHA is not in the checkout"; exit 2; }
+          if git cat-file -e "$BASE_SHA:sanitize.config.json" 2>/dev/null; then
+            git show "$BASE_SHA:sanitize.config.json" > "$RUNNER_TEMP/trusted-sanitize.config.json"
+            echo "path=$RUNNER_TEMP/trusted-sanitize.config.json" >> "$GITHUB_OUTPUT"
+            if ! git diff --quiet "$BASE_SHA" HEAD -- sanitize.config.json; then
+              msg="This PR changes sanitize.config.json. The gate scanned it with the BASE branch's config; the change takes effect only after merge. A maintainer must review the config change by hand: anything that loosens the gate needs a reason."
+              echo "::notice title=Config change not applied to this PR::$msg"
+              { echo "### sanitize.config.json changed"; echo "$msg"; } >> "$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            msg="The base commit has no sanitize.config.json (first adoption of the gate), so there is no trusted config: this run uses the PR's own config. Review that config by hand before merging."
+            echo "::warning title=No trusted config at base::$msg"
+            { echo "### No trusted config at base"; echo "$msg"; } >> "$GITHUB_STEP_SUMMARY"
+            echo "path=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: "2. Secrets & PII gate (deterministic — always enforced, no key needed)"
+        env:
+          GATE_DIR: ${{ steps.gate.outputs.judge }}
+          SANITIZE_BASE_REF: ${{ steps.scope.outputs.base }}
+          SANITIZE_CONFIG: ${{ steps.cfg.outputs.path }}
+          OPENROUTER_API_KEY: ""
+        run: python "$GATE_DIR/check_sanitization.py" ${{ steps.scope.outputs.args }} --deterministic-only --require-config
+
+      # Fork detection compares repo names from the event payload — nothing a PR
+      # author can set from a title or branch name.
+      - name: "3. Particulars gate (semantic — needs OPENROUTER_API_KEY, fails closed)"
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GATE_DIR: ${{ steps.gate.outputs.judge }}
+          SANITIZE_BASE_REF: ${{ steps.scope.outputs.base }}
+          SANITIZE_CONFIG: ${{ steps.cfg.outputs.path }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: python "$GATE_DIR/check_sanitization.py" ${{ steps.scope.outputs.args }} --require-semantic --require-config
+
+      - name: "3. Particulars gate NOT RUN (fork PR — no secret available)"
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          msg="This PR is from a fork, so OPENROUTER_API_KEY is not available to the run and the SEMANTIC layer did not execute. Secrets and PII were checked; this repo's particulars were NOT. A maintainer must review this diff for particulars by hand (or run the gate locally with the key) before merging. The full-tree lane re-checks after merge."
+          echo "::warning title=Partial sanitization coverage::$msg"
+          echo "### Particulars gate NOT RUN (fork PR)" >> "$GITHUB_STEP_SUMMARY"
+          echo "$msg" >> "$GITHUB_STEP_SUMMARY"
