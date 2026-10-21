@@ -1,6 +1,6 @@
 # Protected outputs and Papa Reo escalation
 
-*Design summary for the Swarm Map side of this feature. The ovenmitt core and the Hermes bridge live in the [ovenmitt](https://github.com/utunga/oven-mitt) repo; the transcription plugin lives in its own repo. Operator guide: [runbooks/ovenmitt.md](../runbooks/ovenmitt.md).* <!-- FIXME: move this utunga/ URL to cyborg-garden/oven-mitt as soon as that is fixed -->
+*Design summary for the Swarm Map side of this feature. The ovenmitt core and the Hermes bridge live in the [ovenmitt](https://github.com/cyborg-garden/oven-mitt) repo; the transcription plugin lives in its own repo. Operator guide: [runbooks/ovenmitt.md](../runbooks/ovenmitt.md).* <!-- FIXME: move this utunga/ URL to cyborg-garden/oven-mitt as soon as that is fixed -->
 
 ## Goal
 

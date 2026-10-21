@@ -106,7 +106,7 @@ On first launch, the setup wizard detects your Hermes compose directories automa
 - **Policy enforcement** — group access control, DM approval gating, admin resolution
 - **Agent creation wizard** — scaffold and deploy new agents from the UI
 - **API key management** — AES-256-GCM encrypted at rest; sealed keys (e.g. Papa Reo) go into the compose environment, never the agent's `.env`
-- **Protected outputs** — a per-agent [ovenmitt](https://github.com/utunga/oven-mitt) vault for outputs that must never enter a model's context, delivered to chats on operator-approved platforms only, with a 6-hourly audit check ([runbook](docs/runbooks/ovenmitt.md)) <!-- FIXME: move this utunga/ URL to cyborg-garden/oven-mitt as soon as that is fixed -->
+- **Protected outputs** — a per-agent [ovenmitt](https://github.com/cyborg-garden/oven-mitt) vault for outputs that must never enter a model's context, delivered to chats on operator-approved platforms only, with a 6-hourly audit check ([runbook](docs/runbooks/ovenmitt.md)) <!-- FIXME: move this utunga/ URL to cyborg-garden/oven-mitt as soon as that is fixed -->
 - **Transcription (Papa Reo escalation)** — recordings get a transcript back; ones that may contain te reo Māori go to Papa Reo and through Protected outputs
 - **Audit log** — track who changed what and when
 
