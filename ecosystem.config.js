@@ -7,7 +7,13 @@ module.exports = {
       // the node interpreter ("SyntaxError: missing ) after argument list").
       // dist/bin/next has a `#!/usr/bin/env node` shebang and is layout-agnostic.
       script: 'node_modules/next/dist/bin/next',
-      args: 'start',
+      // Loopback by default. Everything that talks to HSM is on this host:
+      // cloudflared (hsm.<domain>, behind Cloudflare Access), the host-side
+      // gates, and agent containers via host.docker.internal (Docker Desktop
+      // and OrbStack forward that to the host's loopback). Listening on
+      // 0.0.0.0 let anyone on the LAN skip the Access login. For remote use,
+      // tunnel: `ssh -L 3000:127.0.0.1:3000 <host>`. HSM_BIND_HOST overrides.
+      args: `start --hostname ${process.env.HSM_BIND_HOST || '127.0.0.1'}`,
       env: {
         NODE_ENV: 'production',
         PORT: 3000,

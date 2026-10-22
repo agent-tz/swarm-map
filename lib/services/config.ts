@@ -28,6 +28,14 @@ export function validateSettingsPatch(input: unknown): Partial<Settings> {
         assertNoNewline(value, key)
         out[key] = value
         break
+      case 'apiBindHost':
+        // Rendered as a bare YAML scalar into every agent compose, so allow only
+        // address characters (IPv4, IPv6, hostname). Empty = use the default.
+        if (typeof value !== 'string' || !/^[A-Za-z0-9.:\[\]-]*$/.test(value)) {
+          throw new Error('apiBindHost must be an IP address or hostname')
+        }
+        out.apiBindHost = value
+        break
       case 'theme':
         if (value !== 'light' && value !== 'dark') throw new Error('theme must be "light" or "dark"')
         out.theme = value
@@ -165,6 +173,7 @@ const DEFAULT_SETTINGS: Settings = {
   useLocalBuild: false,
   vncBindHost: '127.0.0.1',
   controlBindHost: '127.0.0.1',
+  apiBindHost: '127.0.0.1',
 }
 
 // Agent data directory mapping

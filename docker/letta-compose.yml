@@ -42,7 +42,9 @@ services:
       # (spec §C1): a non-default instance sets LETTA_PORT via its server .env
       # (--env-file); the default instance publishes :8283, matching the client
       # default (LETTA_DEFAULT_PORT in lib/services/letta-deploy-templates.ts).
-      - "${LETTA_PORT:-8283}:8283"
+      # Loopback only: HSM and agent containers (via host.docker.internal) are
+      # the only clients, and the REST API carries server-wide provider keys.
+      - "127.0.0.1:${LETTA_PORT:-8283}:8283"
     environment:
       # Provider keys are SERVER-WIDE in self-hosted Letta (not per-agent) — a
       # key difference from Hermes, where creds are per-container env. Passed

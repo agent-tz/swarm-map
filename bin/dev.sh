@@ -27,7 +27,8 @@ if [ "${NODE_ENV:-}" = "production" ]; then
     exit 1
   fi
   echo "Starting Swarm Map (production) on http://localhost:$DEFAULT_PORT"
-  exec npx next start --port "$DEFAULT_PORT" --hostname 0.0.0.0
+  # Loopback by default (see ecosystem.config.js); HSM_BIND_HOST overrides.
+  exec npx next start --port "$DEFAULT_PORT" --hostname "${HSM_BIND_HOST:-127.0.0.1}"
 fi
 
 # Kill only our own zombie processes on a port
@@ -89,4 +90,4 @@ fi
 
 PORT=$(find_port)
 echo "Starting Swarm Map on http://localhost:$PORT"
-exec npx next dev --port "$PORT"
+exec npx next dev --port "$PORT" --hostname "${HSM_BIND_HOST:-127.0.0.1}"

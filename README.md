@@ -120,10 +120,14 @@ Build once, run in production mode:
 
 ```bash
 pnpm build
-npx next start --port 3000 --hostname 0.0.0.0
+npx next start --port 3000 --hostname 127.0.0.1
 ```
 
-Access from any machine on the network at `http://<hostname>:3000`. Run behind nginx or Tailscale for HTTPS or external access.
+HSM listens on loopback only. Reach it from another machine through an SSH tunnel (`ssh -L 3000:127.0.0.1:3000 <host>`, then open `http://localhost:3000`) or through a Cloudflare Tunnel behind Cloudflare Access. Set `HSM_BIND_HOST` to listen elsewhere, knowing that anything on that network then reaches HSM without the Access login.
+
+**Cloudflare Access at the origin.** When HSM sits behind Cloudflare Access, set `CF_ACCESS_TEAM_DOMAIN` (for example `yourteam.cloudflareaccess.com`) and `CF_ACCESS_AUD` (the Access application's audience tag). HSM then checks the signed `Cf-Access-Jwt-Assertion` on every request that arrives through Cloudflare and refuses it if the token is missing or invalid, so a broken or deleted Access policy fails closed instead of open. Requests made directly on the host (agents, gates) are unaffected and still need the operator session for gated routes.
+
+Agent API ports are also published on `127.0.0.1` by default (`apiBindHost` setting).
 
 Set `ALLOWED_DEV_ORIGINS` in `.env` for dev mode on remote machines (see Configuration).
 
