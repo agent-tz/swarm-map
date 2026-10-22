@@ -91,11 +91,19 @@ interface JwksCacheEntry {
 
 const jwksCache = new Map<string, JwksCacheEntry>()
 const lastForcedRefresh = new Map<string, number>()
+/** One shared fetch per team domain, so a burst of requests makes one call. */
+const inflight = new Map<string, Promise<Map<string, CryptoKey>>>()
+/** When the last fetch failed; no new fetch until the backoff passes. */
+const lastFailure = new Map<string, number>()
+/** Wait this long after a failed JWKS fetch before trying again. */
+const JWKS_FAILURE_BACKOFF_MS = 30 * 1000
 
 /** Test hook: drop cached keys so each test controls the JWKS it sees. */
 export function __resetAccessJwksCache(): void {
   jwksCache.clear()
   lastForcedRefresh.clear()
+  inflight.clear()
+  lastFailure.clear()
 }
 
 async function fetchJwks(teamDomain: string): Promise<Map<string, CryptoKey>> {
@@ -127,22 +135,51 @@ async function fetchJwks(teamDomain: string): Promise<Map<string, CryptoKey>> {
   return keys
 }
 
-async function keyForKid(teamDomain: string, kid: string): Promise<CryptoKey | undefined> {
+/**
+ * Refresh the cached keys. Concurrent callers share one fetch. After a failure,
+ * further fetches wait out a backoff, and the previous keys (if any) stay in
+ * use, so an outage at Cloudflare neither floods it nor locks out tokens
+ * signed by keys we already trust. Throws only when there are no keys at all.
+ */
+async function refresh(teamDomain: string): Promise<JwksCacheEntry> {
   const now = Date.now()
-  let entry = jwksCache.get(teamDomain)
-  if (!entry || now - entry.fetchedAt > JWKS_TTL_MS) {
-    entry = { keys: await fetchJwks(teamDomain), fetchedAt: now }
+  const stale = jwksCache.get(teamDomain)
+  const failedAt = lastFailure.get(teamDomain)
+  if (failedAt !== undefined && now - failedAt < JWKS_FAILURE_BACKOFF_MS) {
+    if (stale) return stale
+    throw new Error('JWKS fetch backing off after a failure')
+  }
+  let p = inflight.get(teamDomain)
+  if (!p) {
+    p = fetchJwks(teamDomain).finally(() => inflight.delete(teamDomain))
+    inflight.set(teamDomain, p)
+  }
+  try {
+    const entry = { keys: await p, fetchedAt: Date.now() }
     jwksCache.set(teamDomain, entry)
+    lastFailure.delete(teamDomain)
+    return entry
+  } catch (err) {
+    lastFailure.set(teamDomain, Date.now())
+    if (stale) return stale
+    throw err
+  }
+}
+
+async function keyForKid(teamDomain: string, kid: string): Promise<CryptoKey | undefined> {
+  let entry = jwksCache.get(teamDomain)
+  if (!entry || Date.now() - entry.fetchedAt > JWKS_TTL_MS) {
+    entry = await refresh(teamDomain)
   }
   const hit = entry.keys.get(kid)
   if (hit) return hit
   // Unknown kid: Cloudflare may have rotated. Refresh at most once per gap so a
   // stream of junk kids cannot turn every request into a JWKS fetch.
+  const now = Date.now()
   const last = lastForcedRefresh.get(teamDomain) ?? 0
   if (now - last < JWKS_FORCED_REFRESH_GAP_MS) return undefined
   lastForcedRefresh.set(teamDomain, now)
-  entry = { keys: await fetchJwks(teamDomain), fetchedAt: now }
-  jwksCache.set(teamDomain, entry)
+  entry = await refresh(teamDomain)
   return entry.keys.get(kid)
 }
 

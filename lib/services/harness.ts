@@ -27,7 +27,7 @@ import {
 import { checkBasePackageDrift, type DriftReport } from './base-package-drift'
 import { getUseCaseTemplate, reapplyUseCaseTemplate as reapplyTemplateToDataDir } from './usecase-templates'
 import type { ToolsService } from './tools'
-import { generateStandaloneCompose, setComposeImage, readComposeImage, readComposeBuildContext, stateVolumeName, MIGRATED_DB_FILES, bindUnpinnedPorts, DEFAULT_API_BIND_HOST } from './harness-compose'
+import { generateStandaloneCompose, setComposeImage, readComposeImage, readComposeBuildContext, stateVolumeName, MIGRATED_DB_FILES, bindUnpinnedPorts, defaultApiBindHost } from './harness-compose'
 import { isStateDbMigrated } from './db-path'
 import { RegistryService, parseImageRef } from './registry'
 import type { ContainerRuntimeAdapter } from './runtime-adapter'
@@ -109,8 +109,11 @@ export function toHarnessSlug(name: string): string {
 // the next new agent.
 export function parsePublishedPorts(dockerPsPorts: string): number[] {
   const ports: number[] = []
-  for (const match of dockerPsPorts.matchAll(/:(\d+)->/g)) {
-    ports.push(parseInt(match[1], 10))
+  // A range ("0.0.0.0:8000-8002->…") reserves every port in it.
+  for (const match of dockerPsPorts.matchAll(/:(\d+)(?:-(\d+))?->/g)) {
+    const lo = parseInt(match[1], 10)
+    const hi = match[2] ? parseInt(match[2], 10) : lo
+    for (let p = lo; p <= hi && p - lo < 1024; p++) ports.push(p)
   }
   return ports
 }
@@ -1412,13 +1415,20 @@ export class HarnessService {
    * exists to remove.
    */
   private pinComposePorts(name: string, composeFile: string): void {
-    const host = this.config?.getSettings()?.apiBindHost || DEFAULT_API_BIND_HOST
+    const host = this.config?.getSettings()?.apiBindHost || defaultApiBindHost()
+    // 0.0.0.0 is compose's own default, so pinning it would change nothing.
+    if (host === '0.0.0.0') return
     const before = fs.readFileSync(composeFile, 'utf-8')
     const after = bindUnpinnedPorts(before, host)
     if (after === before) return
     const tmp = `${composeFile}.tmp-${process.pid}`
-    fs.writeFileSync(tmp, after, 'utf-8')
-    fs.renameSync(tmp, composeFile)
+    try {
+      fs.writeFileSync(tmp, after, { encoding: 'utf-8', mode: fs.statSync(composeFile).mode & 0o777 })
+      fs.renameSync(tmp, composeFile)
+    } catch (err) {
+      fs.rmSync(tmp, { force: true })
+      throw err
+    }
     this.audit.append({ who: 'admin', what: 'compose:pin-ports', target: name, meta: { host } })
   }
 
@@ -1694,6 +1704,9 @@ export class HarnessService {
     if (!target) {
       throw new Error(`Harness ${id} has no compose file configured`)
     }
+    // `up -d` recreates the container when the compose changed, so a stopped
+    // old agent picks up the loopback binding on its next start too.
+    this.pinComposePorts(harness!.name, target.composeFile)
     this.docker.start(target.composeFile, target.serviceName)
     this.audit.append({ who: 'admin', what: 'start', target: harness!.name })
   }

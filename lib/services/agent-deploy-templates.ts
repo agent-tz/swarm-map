@@ -5,7 +5,7 @@
  */
 import { hsmBaseUrl } from './hsm-url'
 import { anthropicEnvVarForValue } from './keys'
-import { ollamaSidecar, stateInitService, stateVolumeBlock, stateVolumeName, DEFAULT_API_BIND_HOST } from './harness-compose'
+import { ollamaSidecar, stateInitService, stateVolumeBlock, stateVolumeName, defaultApiBindHost, isValidBindHost } from './harness-compose'
 import { assertNoNewline } from '@/lib/env-helpers'
 
 export function generateEnvContent(params: {
@@ -284,7 +284,8 @@ export function generateAgentCompose(
   // the github MCP token is delivered via the agent .env (env_file), not a compose
   // `environment:` override (which resolves from the empty process env and blanks it).
   const { googleMcpDir, bundledOllama, ollamaImage, memory, cpus } = options ?? {}
-  const bindHost = options?.apiBindHost || DEFAULT_API_BIND_HOST
+  const bindHost = options?.apiBindHost || defaultApiBindHost()
+  if (!isValidBindHost(bindHost)) throw new Error(`apiBindHost must be a bare IP address, got ${JSON.stringify(bindHost)}`)
   const sourceBlock = 'image' in imageOrBuild
     ? `    image: ${imageOrBuild.image}`
     : `    build:\n      context: ${imageOrBuild.build}\n      dockerfile: Dockerfile`

@@ -164,7 +164,7 @@ export interface EnsureLettaServerOptions {
   name?: string
   /**
    * Published REST port (spec §C1). Non-default ports are delivered to the
-   * compose via LETTA_PORT in the server .env ("${LETTA_PORT:-8283}:8283") and
+   * compose via LETTA_PORT in the server .env ("127.0.0.1:${LETTA_PORT:-8283}:8283") and
    * used for the health poll + returned baseUrl. Defaults to LETTA_DEFAULT_PORT.
    */
   port?: number
@@ -201,7 +201,7 @@ export async function ensureLettaServer(
   ).replace(/\/+$/, '')
   const serverDir = lettaServerDir(opts.swarmMapDataDir, opts.name)
   // LETTA_PORT is written only for a non-default port — the compose publishes
-  // "${LETTA_PORT:-8283}:8283", so the default instance needs (and gets) no
+  // "127.0.0.1:${LETTA_PORT:-8283}:8283", so the default instance needs (and gets) no
   // env line, preserving the "no keys → no env-file" behavior.
   const serverEnv: Record<string, string> = { ...(opts.serverEnv ?? {}) }
   if (port !== LETTA_DEFAULT_PORT) serverEnv.LETTA_PORT = String(port)

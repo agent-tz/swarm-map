@@ -147,6 +147,25 @@ describe('verifyAccessJwt', () => {
     fetchMock.mockImplementation(async () => new Response('nope', { status: 500 }))
     expect(await verifyAccessJwt(await sign(claims()), CONFIG, NOW)).toEqual({ ok: false, reason: 'jwks unavailable' })
   })
+  it('backs off after a failed fetch: a burst of requests makes one call', async () => {
+    fetchMock.mockImplementation(async () => new Response('nope', { status: 500 }))
+    const tok = await sign(claims())
+    await Promise.all(Array.from({ length: 20 }, () => verifyAccessJwt(tok, CONFIG, NOW)))
+    for (let i = 0; i < 20; i++) await verifyAccessJwt(tok, CONFIG, NOW)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+  it('keeps using known keys when a refresh fails', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      await verifyAccessJwt(await sign(claims()), CONFIG, NOW) // warm cache
+      vi.setSystemTime(Date.now() + 11 * 60 * 1000) // past the TTL
+      fetchMock.mockImplementation(async () => new Response('nope', { status: 500 }))
+      expect((await verifyAccessJwt(await sign(claims()), CONFIG, NOW)).ok).toBe(true)
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
   it('caches the JWKS across requests', async () => {
     await verifyAccessJwt(await sign(claims()), CONFIG, NOW)
     await verifyAccessJwt(await sign(claims()), CONFIG, NOW)

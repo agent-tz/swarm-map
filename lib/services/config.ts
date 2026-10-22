@@ -1,6 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
+import { isIP } from 'net'
 import type { Settings, Model, Person, Surface, ModelAutoUpdateSettings } from '@/lib/types'
 import type { Storage } from './storage'
 import { assertNoNewline } from '@/lib/env-helpers'
@@ -29,10 +30,12 @@ export function validateSettingsPatch(input: unknown): Partial<Settings> {
         out[key] = value
         break
       case 'apiBindHost':
-        // Rendered as a bare YAML scalar into every agent compose, so allow only
-        // address characters (IPv4, IPv6, hostname). Empty = use the default.
-        if (typeof value !== 'string' || !/^[A-Za-z0-9.:\[\]-]*$/.test(value)) {
-          throw new Error('apiBindHost must be an IP address or hostname')
+        // Written as compose host_ip into every agent's file, and compose only
+        // accepts a bare IP literal there (no hostname, no [::1] brackets —
+        // YAML reads those as a list). A bad value would be pinned into every
+        // compose on the next recreate and leave agents down. Empty = default.
+        if (typeof value !== 'string' || (value !== '' && isIP(value) === 0)) {
+          throw new Error('apiBindHost must be a bare IP address (e.g. 127.0.0.1 or ::1)')
         }
         out.apiBindHost = value
         break
@@ -173,7 +176,7 @@ const DEFAULT_SETTINGS: Settings = {
   useLocalBuild: false,
   vncBindHost: '127.0.0.1',
   controlBindHost: '127.0.0.1',
-  apiBindHost: '127.0.0.1',
+  // apiBindHost unset: the compose generator picks a per-platform default.
 }
 
 // Agent data directory mapping

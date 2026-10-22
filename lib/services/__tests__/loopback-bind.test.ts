@@ -1,8 +1,14 @@
-import { describe, it, expect } from 'vitest'
-import { generateStandaloneCompose, bindUnpinnedPorts, DEFAULT_API_BIND_HOST } from '@/lib/services/harness-compose'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { generateStandaloneCompose, bindUnpinnedPorts, defaultApiBindHost } from '@/lib/services/harness-compose'
 import { generateAgentCompose } from '@/lib/services/agent-deploy-templates'
 import { parsePublishedPorts } from '@/lib/services/harness'
 import { validateSettingsPatch } from '@/lib/services/config'
+
+// The loopback default is macOS-only (see defaultApiBindHost). CI runs on
+// Linux, so pin the platform for the generator tests and restore it after.
+const realPlatform = process.platform
+beforeAll(() => { Object.defineProperty(process, 'platform', { value: 'darwin' }) })
+afterAll(() => { Object.defineProperty(process, 'platform', { value: realPlatform }) })
 
 type Port = { host_ip?: string; published: number; target: number }
 // Minimal reader for the long-syntax port entries HSM emits: slice the named
@@ -43,6 +49,10 @@ describe('agent ports bind to loopback by default', () => {
     expect(ports.map((p) => p.host_ip)).toEqual(['127.0.0.1', '127.0.0.1', '127.0.0.1'])
     expect(ports[0]).toEqual({ host_ip: '127.0.0.1', published: 8652, target: 8642 })
   })
+  it('generators refuse a non-IP apiBindHost instead of writing a broken compose', () => {
+    expect(() => generateStandaloneCompose('a', 8652, '/d/a', { apiBindHost: '[::1]' })).toThrow()
+    expect(() => generateAgentCompose('a', 8652, '/d/a', { image: 'img:1' }, { apiBindHost: 'localhost' })).toThrow()
+  })
   it('apiBindHost overrides the API port only', () => {
     const ports = portsOf(generateStandaloneCompose('a', 8652, '/d/a', { vpnEnabled: true, apiBindHost: '192.0.2.5' }), 'wireguard')
     expect(ports.map((p) => p.host_ip)).toEqual(['192.0.2.5', '127.0.0.1', '127.0.0.1'])
@@ -78,7 +88,7 @@ services:
     volumes:
       - /d:/opt/data
 `
-  it('pins unpinned entries to loopback and keeps YAML valid', () => {
+  it('pins unpinned entries to loopback in the shape the generator emits', () => {
     const out = bindUnpinnedPorts(OLD)
     expect(portsOf(out, 'hermes-iris')).toEqual([
       { host_ip: '127.0.0.1', published: 8712, target: 8642 },
@@ -101,8 +111,15 @@ services:
     expect(() => bindUnpinnedPorts(OLD, '0.0.0.0\n    privileged: true')).toThrow()
     expect(() => bindUnpinnedPorts(OLD, '1.2.3.4 # x')).toThrow()
   })
-  it('default host is loopback', () => {
-    expect(DEFAULT_API_BIND_HOST).toBe('127.0.0.1')
+  it('default host is loopback on macOS, all interfaces on Linux', () => {
+    expect(defaultApiBindHost('darwin')).toBe('127.0.0.1')
+    expect(defaultApiBindHost('linux')).toBe('0.0.0.0')
+  })
+  it('refuses values compose rejects as host_ip', () => {
+    for (const bad of ['[::1]', 'localhost', 'host.docker.internal', '']) {
+      expect(() => bindUnpinnedPorts(OLD, bad)).toThrow()
+    }
+    expect(() => bindUnpinnedPorts(OLD, '::1')).not.toThrow()
   })
 })
 
@@ -113,8 +130,9 @@ describe('parsePublishedPorts counts every host IP', () => {
       '0.0.0.0:8682->8642/tcp, [::]:8682->8642/tcp',
       '8080/tcp',
       '127.0.0.1:5902->5900/tcp, 127.0.0.1:6082->6080/tcp',
+      '0.0.0.0:8000-8002->8000-8002/tcp',
     ].join('\n')
-    expect(parsePublishedPorts(out)).toEqual([8652, 8682, 8682, 5902, 6082])
+    expect(parsePublishedPorts(out)).toEqual([8652, 8682, 8682, 5902, 6082, 8000, 8001, 8002])
   })
 })
 
@@ -124,8 +142,10 @@ describe('apiBindHost setting validation', () => {
     expect(validateSettingsPatch({ apiBindHost: '::1' })).toEqual({ apiBindHost: '::1' })
     expect(validateSettingsPatch({ apiBindHost: '' })).toEqual({ apiBindHost: '' })
   })
-  it('rejects anything that is not an address', () => {
+  it('rejects anything that is not a bare IP', () => {
     expect(() => validateSettingsPatch({ apiBindHost: '1.2.3.4 # x' })).toThrow()
+    expect(() => validateSettingsPatch({ apiBindHost: '[::1]' })).toThrow()
+    expect(() => validateSettingsPatch({ apiBindHost: 'localhost' })).toThrow()
     expect(() => validateSettingsPatch({ apiBindHost: 'a\nb' })).toThrow()
     expect(() => validateSettingsPatch({ apiBindHost: 5 })).toThrow()
   })

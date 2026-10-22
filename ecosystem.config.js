@@ -12,8 +12,13 @@ module.exports = {
       // gates, and agent containers via host.docker.internal (Docker Desktop
       // and OrbStack forward that to the host's loopback). Listening on
       // 0.0.0.0 let anyone on the LAN skip the Access login. For remote use,
-      // tunnel: `ssh -L 3000:127.0.0.1:3000 <host>`. HSM_BIND_HOST overrides.
-      args: `start --hostname ${process.env.HSM_BIND_HOST || '127.0.0.1'}`,
+      // tunnel: `ssh -L 3000:127.0.0.1:3000 <host>`.
+      // Linux keeps 0.0.0.0: there host.docker.internal is the docker bridge
+      // IP, which cannot reach a loopback listener.
+      // HSM_BIND_HOST overrides; it is read from the shell that runs
+      // `pm2 start`, not from .env. pm2 caches args: after changing this, run
+      // `pnpm pm2:reapply` (a plain `pm2 restart` keeps the old binding).
+      args: `start --hostname ${process.env.HSM_BIND_HOST || (process.platform === 'darwin' ? '127.0.0.1' : '0.0.0.0')}`,
       env: {
         NODE_ENV: 'production',
         PORT: 3000,

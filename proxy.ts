@@ -148,5 +148,5 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
 export const config = {
   // Everything except Next's static build output, so the Access check covers
   // pages as well as the API. Static chunks carry no data.
-  matcher: '/((?!_next/static|_next/image|favicon.ico).*)',
+  matcher: '/((?!_next/static|favicon.ico).*)',
 }
