@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { NextRequest } from 'next/server'
-import { proxy } from './proxy'
+import { proxy, config as proxyConfig } from './proxy'
 import { SESSION_COOKIE, computeSessionValue } from '@/lib/auth/session'
 
 const TOKEN = 'super-secret-operator-token'
@@ -224,5 +224,18 @@ describe('proxy — Cloudflare Access at the origin', () => {
   })
   it('pages never hit the session gate (unchanged behaviour off the API)', async () => {
     expect(passedThrough(await proxy(req('/settings', 'GET')))).toBe(true)
+  })
+})
+
+describe('proxy matcher covers pages, not static chunks', () => {
+  // Next compiles the matcher with path-to-regexp; the pattern is a plain
+  // regex group, so it can be checked the same way.
+  const re = new RegExp('^' + proxyConfig.matcher.replace('/((?!', '/(?!(?:').replace(').*)', ')).*') + '$')
+  it('matches pages and the API (the Access check must see them)', () => {
+    for (const p of ['/', '/settings', '/api/harnesses', '/api']) expect(re.test(p)).toBe(true)
+  })
+  it('skips static build output', () => {
+    expect(re.test('/_next/static/chunks/app.js')).toBe(false)
+    expect(re.test('/favicon.ico')).toBe(false)
   })
 })

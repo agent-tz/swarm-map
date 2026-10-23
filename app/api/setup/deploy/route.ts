@@ -236,6 +236,7 @@ export async function POST(request: Request) {
         persona,
         serverKey: llmKey,
         swarmMapDataDir,
+        bindHost: lettaSettings.apiBindHost,
       })
       if (result.status < 200 || result.status >= 300) {
         return NextResponse.json(result.body, { status: result.status })

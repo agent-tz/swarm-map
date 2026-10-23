@@ -155,7 +155,11 @@ async function refresh(teamDomain: string): Promise<JwksCacheEntry> {
     inflight.set(teamDomain, p)
   }
   try {
-    const entry = { keys: await p, fetchedAt: Date.now() }
+    const keys = await p
+    // An empty set is treated as a failure: it would otherwise evict keys we
+    // already trust and lock everyone out until the next refresh.
+    if (keys.size === 0) throw new Error('JWKS contained no usable keys')
+    const entry = { keys, fetchedAt: Date.now() }
     jwksCache.set(teamDomain, entry)
     lastFailure.delete(teamDomain)
     return entry

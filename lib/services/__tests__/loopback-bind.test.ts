@@ -116,7 +116,7 @@ services:
     expect(defaultApiBindHost('linux')).toBe('0.0.0.0')
   })
   it('refuses values compose rejects as host_ip', () => {
-    for (const bad of ['[::1]', 'localhost', 'host.docker.internal', '']) {
+    for (const bad of ['[::1]', 'localhost', 'host.docker.internal', '', 'fe80::1%en0']) {
       expect(() => bindUnpinnedPorts(OLD, bad)).toThrow()
     }
     expect(() => bindUnpinnedPorts(OLD, '::1')).not.toThrow()
@@ -146,6 +146,7 @@ describe('apiBindHost setting validation', () => {
     expect(() => validateSettingsPatch({ apiBindHost: '1.2.3.4 # x' })).toThrow()
     expect(() => validateSettingsPatch({ apiBindHost: '[::1]' })).toThrow()
     expect(() => validateSettingsPatch({ apiBindHost: 'localhost' })).toThrow()
+    expect(() => validateSettingsPatch({ apiBindHost: 'fe80::1%en0' })).toThrow()
     expect(() => validateSettingsPatch({ apiBindHost: 'a\nb' })).toThrow()
     expect(() => validateSettingsPatch({ apiBindHost: 5 })).toThrow()
   })

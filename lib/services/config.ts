@@ -34,7 +34,7 @@ export function validateSettingsPatch(input: unknown): Partial<Settings> {
         // accepts a bare IP literal there (no hostname, no [::1] brackets —
         // YAML reads those as a list). A bad value would be pinned into every
         // compose on the next recreate and leave agents down. Empty = default.
-        if (typeof value !== 'string' || (value !== '' && isIP(value) === 0)) {
+        if (typeof value !== 'string' || (value !== '' && (isIP(value) === 0 || value.includes('%')))) {
           throw new Error('apiBindHost must be a bare IP address (e.g. 127.0.0.1 or ::1)')
         }
         out.apiBindHost = value

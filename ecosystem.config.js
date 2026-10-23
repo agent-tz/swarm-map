@@ -1,3 +1,12 @@
+// pm2 loads this file as CommonJS.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { isIP } = require('net')
+
+const bindHost = process.env.HSM_BIND_HOST || (process.platform === 'darwin' ? '127.0.0.1' : '0.0.0.0')
+if (isIP(bindHost) === 0 || bindHost.includes('%')) {
+  throw new Error(`HSM_BIND_HOST must be a bare IP address, got ${JSON.stringify(bindHost)}`)
+}
+
 module.exports = {
   apps: [
     {
@@ -18,7 +27,7 @@ module.exports = {
       // HSM_BIND_HOST overrides; it is read from the shell that runs
       // `pm2 start`, not from .env. pm2 caches args: after changing this, run
       // `pnpm pm2:reapply` (a plain `pm2 restart` keeps the old binding).
-      args: `start --hostname ${process.env.HSM_BIND_HOST || (process.platform === 'darwin' ? '127.0.0.1' : '0.0.0.0')}`,
+      args: `start --hostname ${bindHost}`,
       env: {
         NODE_ENV: 'production',
         PORT: 3000,

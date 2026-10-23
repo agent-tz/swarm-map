@@ -166,6 +166,30 @@ describe('verifyAccessJwt', () => {
       vi.useRealTimers()
     }
   })
+  it('retries after the backoff expires (no permanent lockout)', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      fetchMock.mockImplementationOnce(async () => new Response('nope', { status: 500 }))
+      const tok = await sign(claims())
+      expect((await verifyAccessJwt(tok, CONFIG, NOW)).ok).toBe(false)
+      vi.setSystemTime(Date.now() + 31 * 1000)
+      expect((await verifyAccessJwt(tok, CONFIG, NOW)).ok).toBe(true)
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+  it('an empty key set does not evict known keys', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      await verifyAccessJwt(await sign(claims()), CONFIG, NOW) // warm cache
+      vi.setSystemTime(Date.now() + 11 * 60 * 1000)
+      fetchMock.mockImplementation(async () => new Response(JSON.stringify({ keys: [] })))
+      expect((await verifyAccessJwt(await sign(claims()), CONFIG, NOW)).ok).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
   it('caches the JWKS across requests', async () => {
     await verifyAccessJwt(await sign(claims()), CONFIG, NOW)
     await verifyAccessJwt(await sign(claims()), CONFIG, NOW)
